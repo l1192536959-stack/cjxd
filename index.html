@@ -1103,7 +1103,7 @@
     async function handleAvatarUpload(event) {
       const file = event.target.files && event.target.files[0];
       if (!file) return;
-      if (!/^image\\/(png|jpeg|webp|gif)$/.test(file.type)) {
+      if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) {
         showToast('请选择 PNG、JPG、WEBP 或 GIF 图片', 'error');
         event.target.value = '';
         return;
@@ -1144,7 +1144,7 @@
     function updateMemberAvatar(peerId, avatarData) {
       const avatar = document.getElementById('avatar_' + peerId);
       if (!avatar) return;
-      if (avatarData && /^data:image\\/jpeg;base64,/.test(avatarData)) {
+      if (avatarData && /^data:image\/jpeg;base64,/.test(avatarData)) {
         avatar.innerHTML = '<img class="member-avatar-image" alt="玩家头像" src="' + avatarData + '">';
         avatar.classList.remove('bg-gradient-to-br', 'from-[#a855f7]', 'to-[#06b6d4]', 'from-[#3b82f6]');
       } else {
@@ -2488,7 +2488,7 @@
       const safeName = escapeHtml(name);
       const firstChar = escapeHtml(name.charAt(0).toUpperCase());
       const gradientClass = isSelf ? 'from-[#a855f7] to-[#06b6d4]' : 'from-[#3b82f6] to-[#a855f7]';
-      const safeAvatar = avatarData && /^data:image\\/jpeg;base64,/.test(avatarData)
+      const safeAvatar = avatarData && /^data:image\/jpeg;base64,/.test(avatarData)
         ? '<img class="member-avatar-image" alt="玩家头像" src="' + avatarData + '">'
         : firstChar;
 
