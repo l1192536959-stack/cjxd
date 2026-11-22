@@ -147,18 +147,37 @@
           </button>
 
           <div id="advancedBox" class="hidden flex-col gap-3 bg-[#161b24] border border-[#262f3f] rounded-xl p-3.5">
-            <p class="text-xs text-slate-400 leading-relaxed">
-              默认已内置国内公开 STUN 节点（腾讯 <code class="text-slate-300">stun.qq.com</code>、小米 <code class="text-slate-300">stun.miwifi.com</code>、B站 <code class="text-slate-300">stun.chat.bilibili.com</code>）以及免费 OpenRelay TURN 中继（支持 UDP/TCP 443 防火墙穿透）。若你有自建国内 Coturn 服务器，也可在此补充填入以获得更低中转延迟：
-            </p>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-xs text-slate-400 leading-relaxed flex-1">
+                默认使用国内公开 STUN 节点（腾讯 <code class="text-slate-300">stun.qq.com</code>、斗鱼 <code class="text-slate-300">stun.douyucdn.cn</code>、小米 <code class="text-slate-300">stun.miwifi.com</code>、B站 <code class="text-slate-300">stun.chat.bilibili.com</code>）进行 P2P 直连。
+              </p>
+              <button type="button" onclick="runNatDiagnostic()"
+                      class="shrink-0 bg-[#222936] hover:bg-[#2c3546] border border-[#3b82f6]/40 text-[#60a5fa] text-xs font-medium px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
+                🔍 检测本机 NAT 类型
+              </button>
+            </div>
+
+            <!-- NAT 诊断结果显示条 -->
+            <div id="natCheckResult" class="hidden text-xs leading-relaxed p-2.5 rounded-lg bg-[#0d1015] border border-[#262f3f] text-slate-300"></div>
+
+            <div class="flex flex-col gap-1">
+              <label for="turnApiUrl" class="text-xs text-slate-400">
+                方式 A：免费 Metered TURN API 链接（推荐，支持手机 4G/5G 热点与校园网穿透，自动保存）
+              </label>
+              <input id="turnApiUrl" type="text" onchange="saveNetworkSettings()"
+                     placeholder="例如：https://你的项目.metered.live/api/v1/turn/credentials?apiKey=你的KEY"
+                     class="w-full bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
+            </div>
+
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div class="flex flex-col gap-1">
-                <label for="turnUrl" class="text-xs text-slate-400">TURN 服务器地址（可选）</label>
-                <input id="turnUrl" type="text" placeholder="turn:你的服务器IP:3478"
+                <label for="turnUrl" class="text-xs text-slate-400">方式 B：自建 TURN 服务器地址（可选）</label>
+                <input id="turnUrl" type="text" onchange="saveNetworkSettings()" placeholder="turn:你的服务器IP:3478"
                        class="w-full bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
               </div>
               <div class="flex flex-col gap-1">
                 <label for="turnAuth" class="text-xs text-slate-400">TURN 账号 / 密码（可选，冒号分隔）</label>
-                <input id="turnAuth" type="text" placeholder="username:password"
+                <input id="turnAuth" type="text" onchange="saveNetworkSettings()" placeholder="username:password"
                        class="w-full bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
               </div>
             </div>
@@ -333,23 +352,25 @@
      * 1. 国内公开网络适配与信令配置
      * ============================================================
      */
-    const SIGNALING_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+    // 优先连接 EMQX 中国大陆节点，失败时自动切换备用节点
+    const SIGNALING_BROKERS = [
+      'wss://broker-cn.emqx.io:8084/mqtt',
+      'wss://broker.emqx.io:8084/mqtt'
+    ];
     const TOPIC_LOBBY = 'cn-voice-mesh/v2/lobby';
     const TOPIC_ROOM_PREFIX = 'cn-voice-mesh/v2/room';
 
-    // 自定义 TURN 服务器预留配置（可直接在此填写自建 Coturn 服务器，留空则自动使用下方内置节点）
+    // 自定义 TURN 服务器预留配置（可直接在此硬编码自建 Coturn 服务器，群友打开即用）
     const CUSTOM_TURN_SERVERS = [
       // { urls: 'turn:你的服务器IP:3478', username: 'username', credential: 'password' }
     ];
 
-    // 国内三大公开可用 STUN 节点 + 内置免费 OpenRelay TURN 中继（支持 UDP 与 TCP 443 穿透防火墙）
+    // 国内实测可用的高速公开 STUN 节点（去除已失效的国外公共中继避免连接超时）
     const DEFAULT_ICE_SERVERS = [
       { urls: 'stun:stun.qq.com:3478' },
+      { urls: 'stun:stun.douyucdn.cn:18000' },
       { urls: 'stun:stun.miwifi.com:3478' },
-      { urls: 'stun:stun.chat.bilibili.com:3478' },
-      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+      { urls: 'stun:stun.chat.bilibili.com:3478' }
     ];
 
     // 预设公开语音频道
@@ -402,8 +423,14 @@
     // 大厅在线用户映射表: peerId -> { name, roomId, lastSeen }
     const lobbyUsers = new Map();
 
-    // 当前房间远端队友映射表: peerId -> { name, pc, audioEl, gainNode, lastSeen, analyserTimer, iceRetryCount, iceRetryTimer, renegotiating }
+    // 当前房间远端队友映射表: peerId -> { name, pc, audioEl, gainNode, lastSeen, analyserTimer, iceRetryCount, iceRetryTimer, renegotiating, makingOffer, iceCandidateQueue, receivedCandidatesCount }
     const peers = new Map();
+
+    // 提前到达的 ICE 候选地址缓存（防止网络乱序导致丢包）
+    const earlyIceCandidates = new Map();
+
+    // 动态拉取到的 TURN 服务器列表缓存
+    let resolvedDynamicTurnServers = [];
 
     /**
      * 安全本地存储读写（兼容沙盒 iframe 限制）
@@ -457,19 +484,40 @@
 
     /**
      * ============================================================
-     * 3. 页面加载初始化：检测环境、恢复昵称、连接大厅信令
+     * 3. 页面加载初始化
      * ============================================================
      */
     window.addEventListener('DOMContentLoaded', () => {
-      // 检查是否处于安全上下文
-      if (!window.isSecureContext || !navigator.mediaDevices) {
-        document.getElementById('httpsWarning').classList.remove('hidden');
+      // 检测是否为非 HTTPS 且非本地开发环境，或处于受限 iframe 预览环境
+      try {
+        const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+        const isSecure = window.isSecureContext && window.location.protocol === 'https:';
+        const isInIframe = window.self !== window.top;
+        if ((!isSecure && !isLocalhost) || isInIframe) {
+          const warnEl = document.getElementById('httpsWarning');
+          if (warnEl) warnEl.classList.remove('hidden');
+        }
+      } catch (e) {
+        const warnEl = document.getElementById('httpsWarning');
+        if (warnEl) warnEl.classList.remove('hidden');
       }
 
-      // 恢复本地保存的昵称
+      // 恢复本地保存的昵称与自定义网络配置
       const savedName = safeGetStorage('vc_nickname_v2');
       if (savedName) {
         document.getElementById('nicknameInput').value = savedName;
+      }
+      const savedTurnApi = safeGetStorage('vc_turn_api');
+      if (savedTurnApi) {
+        document.getElementById('turnApiUrl').value = savedTurnApi;
+      }
+      const savedTurnUrl = safeGetStorage('vc_turn_url');
+      if (savedTurnUrl) {
+        document.getElementById('turnUrl').value = savedTurnUrl;
+      }
+      const savedTurnAuth = safeGetStorage('vc_turn_auth');
+      if (savedTurnAuth) {
+        document.getElementById('turnAuth').value = savedTurnAuth;
       }
 
       // 初始化渲染大厅公开房间卡片
@@ -581,7 +629,7 @@
     }
 
     function getIceServers() {
-      const servers = [...CUSTOM_TURN_SERVERS, ...DEFAULT_ICE_SERVERS];
+      const servers = [...CUSTOM_TURN_SERVERS, ...resolvedDynamicTurnServers, ...DEFAULT_ICE_SERVERS];
       const turnUrl = document.getElementById('turnUrl').value.trim();
       const turnAuth = document.getElementById('turnAuth').value.trim();
       if (turnUrl) {
@@ -596,12 +644,93 @@
       return servers;
     }
 
+    function saveNetworkSettings() {
+      safeSetStorage('vc_turn_api', document.getElementById('turnApiUrl').value.trim());
+      safeSetStorage('vc_turn_url', document.getElementById('turnUrl').value.trim());
+      safeSetStorage('vc_turn_auth', document.getElementById('turnAuth').value.trim());
+    }
+
+    /**
+     * 若填写了 Metered TURN API 链接，则在加入房间前自动拉取最新的 TURN 临时凭证
+     */
+    async function fetchDynamicTurnServers() {
+      const apiUrl = document.getElementById('turnApiUrl').value.trim();
+      if (!apiUrl) {
+        resolvedDynamicTurnServers = [];
+        return;
+      }
+      try {
+        const res = await fetch(apiUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          resolvedDynamicTurnServers = data;
+        }
+      } catch (err) {
+        console.warn('拉取动态 TURN 凭证失败，将回退使用默认 STUN 节点:', err);
+        showToast('TURN API 拉取失败，已自动使用国内 STUN 直连', 'info');
+      }
+    }
+
+    /**
+     * 一键检测本机 NAT 类型（判断是 P2P 友好的锥形 NAT 还是受限的对称型 NAT）
+     */
+    async function runNatDiagnostic() {
+      const resEl = document.getElementById('natCheckResult');
+      if (!resEl) return;
+      resEl.classList.remove('hidden');
+      resEl.innerHTML = '⏳ 正在向腾讯/斗鱼国内 STUN 节点探测本机公网映射端口（约 2 秒）...';
+
+      try {
+        const testPc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.qq.com:3478' },
+            { urls: 'stun:stun.douyucdn.cn:18000' }
+          ]
+        });
+        testPc.createDataChannel('nat-probe');
+        const srflxPorts = new Set();
+        const srflxIps = new Set();
+
+        testPc.onicecandidate = (e) => {
+          if (e.candidate && e.candidate.candidate) {
+            const parts = e.candidate.candidate.split(' ');
+            // candidate 格式: foundation component protocol priority ip port typ type ...
+            const ip = parts[4];
+            const port = parts[5];
+            const typIdx = parts.indexOf('typ');
+            const candType = typIdx !== -1 ? parts[typIdx + 1] : '';
+            if (candType === 'srflx' && ip && port) {
+              srflxIps.add(ip);
+              srflxPorts.add(`${ip}:${port}`);
+            }
+          }
+        };
+
+        const offer = await testPc.createOffer();
+        await testPc.setLocalDescription(offer);
+
+        await new Promise((resolve) => setTimeout(resolve, 2200));
+        testPc.close();
+
+        if (srflxPorts.size === 0) {
+          resEl.innerHTML = '❌ <strong class="text-red-400">UDP 端口可能被防火墙拦截：</strong>未能从国内 STUN 服务器获取到公网映射地址。请检查路由器防火墙、校园网限制或关闭代理软件的“全局模式”。';
+        } else if (srflxPorts.size > 1) {
+          resEl.innerHTML = `⚠️ <strong class="text-amber-400">检测到对称型 NAT（Symmetric NAT）：</strong>本机对不同服务器映射了多个不同公网端口（${Array.from(srflxPorts).join(' / ')}）。这是<strong>手机 4G/5G 热点或校园网</strong>的典型特征——若队友也是对称型 NAT，双方必须配置 <strong>TURN 中继</strong>或改连家用 Wi-Fi 才能互通。`;
+        } else {
+          resEl.innerHTML = `✅ <strong class="text-[#10b981]">检测到锥形 NAT（P2P 友好网络）：</strong>公网映射地址为 <code class="text-slate-200">${Array.from(srflxPorts)[0]}</code>，可直接与大多数家用宽带/Wi-Fi 玩家 P2P 毫秒级直连！`;
+        }
+      } catch (err) {
+        resEl.innerHTML = `❌ 检测异常：${escapeHtml(err.message || '浏览器不支持 WebRTC')}`;
+      }
+    }
+
     /**
      * ============================================================
      * 4. 全局 MQTT 信令连接与公开大厅频道实时发现
      * ============================================================
      */
-    function initGlobalMqtt() {
+    function initGlobalMqtt(brokerIndex = 0) {
       const statusEl = document.getElementById('netStatus');
       const dotEl = document.getElementById('headerDot');
 
@@ -609,7 +738,7 @@
         statusEl.textContent = '信令脚本加载中...';
         setTimeout(() => {
           if (typeof mqtt !== 'undefined') {
-            initGlobalMqtt();
+            initGlobalMqtt(brokerIndex);
           } else {
             statusEl.textContent = '信令源连接受限';
             dotEl.className = 'w-2 h-2 rounded-full bg-red-500';
@@ -618,11 +747,14 @@
         return;
       }
 
+      const brokerUrl = SIGNALING_BROKERS[brokerIndex % SIGNALING_BROKERS.length];
+      let switchedFallback = false;
+
       try {
-        mqttClient = mqtt.connect(SIGNALING_BROKER, {
+        mqttClient = mqtt.connect(brokerUrl, {
           clientId: 'cnvc_' + myPeerId + '_' + Math.random().toString(16).slice(2, 6),
           clean: true,
-          connectTimeout: 8000,
+          connectTimeout: 6000,
           reconnectPeriod: 3000
         });
       } catch (e) {
@@ -631,9 +763,19 @@
         return;
       }
 
+      // 若首选节点 5.5 秒内未连通，自动切换到备用节点
+      const fallbackTimer = setTimeout(() => {
+        if (!isMqttConnected && !switchedFallback && SIGNALING_BROKERS.length > 1) {
+          switchedFallback = true;
+          try { mqttClient.end(true); } catch (e) {}
+          initGlobalMqtt(brokerIndex + 1);
+        }
+      }, 5500);
+
       mqttClient.on('connect', () => {
+        clearTimeout(fallbackTimer);
         isMqttConnected = true;
-        statusEl.textContent = '国内信令已连通';
+        statusEl.textContent = brokerIndex === 0 ? '国内信令已连通' : '备用信令已连通';
         dotEl.className = 'w-2 h-2 rounded-full bg-[#10b981]';
 
         // 订阅公开大厅频道，实时同步全网各房间人数
@@ -856,6 +998,7 @@
       }
 
       try {
+        await fetchDynamicTurnServers();
         await initLocalAudioPipeline(currentMicDeviceId);
 
         isDemoMode = false;
@@ -1241,14 +1384,15 @@
         updateMemberCount();
         appendSystemChat(`${remoteName} 加入了语音频道`);
 
-        // 若对方刚发 hello，回发定向 ping 让对方立刻建立双向记录
-        if (isNewHello) {
-          sendDirectSignal(remoteId, { type: 'ping', from: myPeerId, name: myNickname });
-        }
+        // 无论谁先进入，新发现对方时立即回发定向 hello 确保对方也建立记录
+        sendDirectSignal(remoteId, { type: 'hello', from: myPeerId, name: myNickname });
 
         // 防碰撞规则：ID 字典序较大的一方主动发起 Offer
         if (myPeerId > remoteId) {
           try {
+            peer.makingOffer = true;
+            const stateEl = document.getElementById(`state_${remoteId}`);
+            if (stateEl) stateEl.textContent = '已发连接请求，等待回应...';
             const offer = await peer.pc.createOffer();
             await peer.pc.setLocalDescription(offer);
             sendDirectSignal(remoteId, {
@@ -1259,14 +1403,26 @@
             });
           } catch (err) {
             console.error('发起 Offer 失败:', err);
+          } finally {
+            peer.makingOffer = false;
           }
+        } else {
+          const stateEl = document.getElementById(`state_${remoteId}`);
+          if (stateEl) stateEl.textContent = '等待对方发起握手...';
         }
       }
       peer.lastSeen = Date.now();
     }
 
     function createPeerConnection(remoteId, remoteName) {
-      const pc = new RTCPeerConnection({ iceServers: getIceServers() });
+      const pc = new RTCPeerConnection({
+        iceServers: getIceServers(),
+        iceCandidatePoolSize: 4
+      });
+
+      // 取出在该队友对象创建前就已经提前到达的 ICE 候选地址
+      const bufferedCandidates = earlyIceCandidates.get(remoteId) || [];
+      earlyIceCandidates.delete(remoteId);
 
       // 发送经过 Mic Boost 增益处理后的音轨
       if (processedOutStream) {
@@ -1299,7 +1455,7 @@
           }
           updateConnectionRouteBadge(remoteId);
         } else if (connState === 'connecting' || iceState === 'checking') {
-          stateEl.textContent = '正在打通网络...';
+          stateEl.textContent = `ICE 打洞中(已收${peer.receivedCandidatesCount}个地址)...`;
           stateEl.className = 'text-xs text-slate-400 mt-0.5';
         } else if (connState === 'failed' || iceState === 'failed') {
           if (peer.iceRetryTimer) {
@@ -1363,8 +1519,26 @@
         analyserTimer: null,
         iceRetryCount: 0,
         iceRetryTimer: null,
-        renegotiating: false
+        renegotiating: false,
+        makingOffer: false,
+        iceCandidateQueue: bufferedCandidates,
+        receivedCandidatesCount: bufferedCandidates.length
       };
+    }
+
+    /**
+     * 将缓冲队列中的 ICE 候选地址逐条应用到已设置远端描述的 RTCPeerConnection
+     */
+    async function flushIceCandidateQueue(peer) {
+      if (!peer || !peer.pc || !peer.pc.remoteDescription) return;
+      while (peer.iceCandidateQueue.length > 0) {
+        const cand = peer.iceCandidateQueue.shift();
+        try {
+          await peer.pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (e) {
+          console.warn('应用排队 ICE 候选失败:', e);
+        }
+      }
     }
 
     /**
@@ -1423,7 +1597,7 @@
       if (!peer || !stateEl) return;
 
       if (peer.iceRetryCount >= 3) {
-        stateEl.textContent = '连接受限，请点右侧🔄重连';
+        stateEl.textContent = '对称NAT受限(需配TURN/点🔄重连)';
         stateEl.className = 'text-xs text-amber-400 mt-0.5';
         return;
       }
@@ -1505,6 +1679,7 @@
 
         const activePeer = peers.get(remoteId);
         if (!activePeer) return;
+        activePeer.makingOffer = true;
         const offer = await activePeer.pc.createOffer({ iceRestart: true });
         await activePeer.pc.setLocalDescription(offer);
         sendDirectSignal(remoteId, {
@@ -1521,7 +1696,10 @@
         }
       } finally {
         const latest = peers.get(remoteId);
-        if (latest) latest.renegotiating = false;
+        if (latest) {
+          latest.renegotiating = false;
+          latest.makingOffer = false;
+        }
       }
     }
 
@@ -1537,17 +1715,24 @@
         }
         peer.lastSeen = Date.now();
 
-        // 处理双方同时触发 ICE 重连时的信令冲突（Glare）
-        if (peer.pc.signalingState !== 'stable') {
-          if (myPeerId > remoteId) {
-            return;
-          }
-          try {
-            await peer.pc.setLocalDescription({ type: 'rollback' });
-          } catch (e) {}
+        // Perfect Negotiation 防碰撞机制：ID 较小的一方为 polite，遇到冲突主动回滚接受对方 Offer
+        const polite = myPeerId < remoteId;
+        const offerCollision = peer.makingOffer || peer.pc.signalingState !== 'stable';
+        if (offerCollision && !polite) {
+          return;
+        }
+        if (offerCollision && polite) {
+          await Promise.all([
+            peer.pc.setLocalDescription({ type: 'rollback' }),
+            peer.pc.setRemoteDescription(new RTCSessionDescription(sdp))
+          ]);
+        } else {
+          await peer.pc.setRemoteDescription(new RTCSessionDescription(sdp));
         }
 
-        await peer.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        // 远端描述就绪后，立即应用此前排队的所有 ICE 候选地址
+        await flushIceCandidateQueue(peer);
+
         const answer = await peer.pc.createAnswer();
         await peer.pc.setLocalDescription(answer);
         sendDirectSignal(remoteId, {
@@ -1562,9 +1747,10 @@
 
     async function handleAnswer(remoteId, sdp) {
       const peer = peers.get(remoteId);
-      if (peer && peer.pc && peer.pc.signalingState !== 'stable') {
+      if (peer && peer.pc && peer.pc.signalingState === 'have-local-offer') {
         try {
           await peer.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          await flushIceCandidateQueue(peer);
         } catch (err) {
           console.error('处理 Answer 异常:', err);
         }
@@ -1572,11 +1758,28 @@
     }
 
     async function handleIceCandidate(remoteId, candidate) {
+      if (!candidate) return;
       const peer = peers.get(remoteId);
-      if (peer && peer.pc && candidate) {
-        try {
-          await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {}
+      if (!peer || !peer.pc) {
+        // 对方节点尚未创建时先暂存候选地址
+        const list = earlyIceCandidates.get(remoteId) || [];
+        list.push(candidate);
+        earlyIceCandidates.set(remoteId, list);
+        return;
+      }
+
+      peer.receivedCandidatesCount = (peer.receivedCandidatesCount || 0) + 1;
+
+      // 若 remoteDescription 尚未设置完成，先放入队列等待 setRemoteDescription 后统一刷新
+      if (!peer.pc.remoteDescription || !peer.pc.remoteDescription.type) {
+        peer.iceCandidateQueue.push(candidate);
+        return;
+      }
+
+      try {
+        await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {
+        console.warn('添加 ICE 候选失败:', e);
       }
     }
 
