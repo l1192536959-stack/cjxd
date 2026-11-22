@@ -462,6 +462,8 @@
     ::-webkit-scrollbar-track { background: #101612 !important; }
     ::-webkit-scrollbar-thumb { background: #465542 !important; }
     ::-webkit-scrollbar-thumb:hover { background: #718b58 !important; }
+    #profileAvatarPreview img { width: 100%; height: 100%; object-fit: cover; }
+    .member-avatar-image { width: 100%; height: 100%; object-fit: cover; border-radius: 9999px; display: block; }
     @media (max-width: 680px) {
       body.cyber-bg { padding: 12px !important; }
       #mainContainer { padding: 16px !important; border-radius: 20px !important; }
@@ -556,6 +558,16 @@
                       class="absolute right-2 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 active:scale-90 transition-all cursor-pointer">
                 🎲
               </button>
+            </div>
+            <div class="mt-2 flex items-center gap-3">
+              <button type="button" onclick="document.getElementById('avatarFileInput').click()"
+                      class="group flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.035] hover:bg-white/[0.07] px-2.5 py-2 transition-all">
+                <span id="profileAvatarPreview" class="w-10 h-10 rounded-full bg-gradient-to-br from-[#c8ff63] to-[#6f9d3a] text-[#11180d] flex items-center justify-center font-bold overflow-hidden shrink-0">?</span>
+                <span class="text-left"><span class="block text-xs font-semibold text-slate-200">自定义头像</span><span class="block text-[10px] text-slate-500">点击上传图片 · 自动保存</span></span>
+              </button>
+              <input id="avatarFileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" onchange="handleAvatarUpload(event)" />
+              <button id="removeAvatarBtn" type="button" onclick="removeCustomAvatar()" class="hidden text-xs text-slate-500 hover:text-red-300 transition-colors">恢复默认</button>
+              <span class="text-[10px] text-slate-600">建议正方形图片，最大 5MB</span>
             </div>
           </div>
 
@@ -845,6 +857,7 @@
 
     const myPeerId = 'u_' + Math.random().toString(36).substring(2, 10);
     let myNickname = '';
+    let myAvatarData = '';
     let currentRoom = '';
     let isInRoom = false;
     let isDemoMode = false;
@@ -967,6 +980,8 @@
       if (savedName) {
         document.getElementById('nicknameInput').value = savedName;
       }
+      myAvatarData = safeGetStorage('vc_avatar_v1') || '';
+      updateProfileAvatarPreview();
       const savedTurnApi = safeGetStorage('vc_turn_api');
       if (savedTurnApi) {
         document.getElementById('turnApiUrl').value = savedTurnApi;
@@ -1046,6 +1061,97 @@
       toastTimer = setTimeout(() => {
         box.classList.add('hidden');
       }, 3200);
+    }
+
+    /**
+     * 头像上传：浏览器本地压缩为小尺寸 JPEG，保存在当前设备，并通过房间信令同步给队友
+     */
+    function updateProfileAvatarPreview() {
+      const preview = document.getElementById('profileAvatarPreview');
+      const removeBtn = document.getElementById('removeAvatarBtn');
+      if (!preview) return;
+      preview.innerHTML = myAvatarData
+        ? '<img src="' + myAvatarData + '" alt="我的头像">'
+        : '?';
+      if (removeBtn) removeBtn.classList.toggle('hidden', !myAvatarData);
+    }
+
+    function compressAvatarImage(file) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        const objectUrl = URL.createObjectURL(file);
+        image.onload = () => {
+          URL.revokeObjectURL(objectUrl);
+          const canvas = document.createElement('canvas');
+          const size = 160;
+          const scale = Math.min(1, size / Math.max(image.width, image.height));
+          canvas.width = Math.max(1, Math.round(image.width * scale));
+          canvas.height = Math.max(1, Math.round(image.height * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return reject(new Error('无法处理这张图片'));
+          ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.76));
+        };
+        image.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error('图片读取失败，请换一张图片'));
+        };
+        image.src = objectUrl;
+      });
+    }
+
+    async function handleAvatarUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (!/^image\\/(png|jpeg|webp|gif)$/.test(file.type)) {
+        showToast('请选择 PNG、JPG、WEBP 或 GIF 图片', 'error');
+        event.target.value = '';
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        showToast('图片不能超过 5MB', 'error');
+        event.target.value = '';
+        return;
+      }
+      try {
+        const compressed = await compressAvatarImage(file);
+        myAvatarData = compressed;
+        safeSetStorage('vc_avatar_v1', myAvatarData);
+        updateProfileAvatarPreview();
+        if (isInRoom) {
+          publishRoomBroadcast({ type: 'profile', from: myPeerId, name: myNickname, avatar: myAvatarData });
+          showToast('头像已更新，正在同步给房间队友', 'success');
+        } else {
+          showToast('头像已保存到本设备', 'success');
+        }
+      } catch (err) {
+        showToast(err.message || '头像处理失败', 'error');
+      } finally {
+        event.target.value = '';
+      }
+    }
+
+    function removeCustomAvatar() {
+      myAvatarData = '';
+      try { localStorage.removeItem('vc_avatar_v1'); } catch (e) {}
+      updateProfileAvatarPreview();
+      if (isInRoom) {
+        publishRoomBroadcast({ type: 'profile', from: myPeerId, name: myNickname, avatar: '' });
+      }
+      showToast('已恢复默认头像', 'success');
+    }
+
+    function updateMemberAvatar(peerId, avatarData) {
+      const avatar = document.getElementById('avatar_' + peerId);
+      if (!avatar) return;
+      if (avatarData && /^data:image\\/jpeg;base64,/.test(avatarData)) {
+        avatar.innerHTML = '<img class="member-avatar-image" alt="玩家头像" src="' + avatarData + '">';
+        avatar.classList.remove('bg-gradient-to-br', 'from-[#a855f7]', 'to-[#06b6d4]', 'from-[#3b82f6]');
+      } else {
+        const peerName = avatar.getAttribute('data-name') || '?';
+        avatar.textContent = peerName.charAt(0).toUpperCase();
+        avatar.classList.add('bg-gradient-to-br');
+      }
     }
 
     /**
@@ -1304,7 +1410,9 @@
           if (topic !== expectedBroadcast && topic !== expectedDirect) return;
 
           if (msg.type === 'hello' || msg.type === 'ping') {
-            await handlePeerPresence(msg.from, msg.name || '队友', msg.type === 'hello');
+            await handlePeerPresence(msg.from, msg.name || '队友', msg.type === 'hello', msg.avatar || '');
+          } else if (msg.type === 'profile') {
+            updateMemberAvatar(msg.from, msg.avatar || '');
           } else if (msg.type === 'bye') {
             handlePeerLeave(msg.from);
           } else if (msg.type === 'offer') {
@@ -1691,7 +1799,7 @@
       updateConstraintButtonsUI();
 
       // 渲染自己的成员卡片并初始化静息频谱条
-      renderMemberCard(myPeerId, `${myNickname} (我)`, true);
+      renderMemberCard(myPeerId, `${myNickname} (我)`, true, 0, myAvatarData);
       drawCardSpectrum(myPeerId, null, false);
       updateMemberCount();
     }
@@ -1750,7 +1858,7 @@
 
         // 订阅房间信令并广播上线
         subscribeRoomTopics(targetRoom);
-        publishRoomBroadcast({ type: 'hello', from: myPeerId, name: myNickname });
+        publishRoomBroadcast({ type: 'hello', from: myPeerId, name: myNickname, avatar: myAvatarData });
         publishLobbySignal({ type: 'lobby_ping', from: myPeerId, name: myNickname, roomId: targetRoom });
 
         // 更新本地大厅计数
@@ -1901,17 +2009,17 @@
      * 7. WebRTC 多人 Mesh 语音建连、TURN 中继检测与自动 ICE 重连
      * ============================================================
      */
-    async function handlePeerPresence(remoteId, remoteName, isNewHello) {
+    async function handlePeerPresence(remoteId, remoteName, isNewHello, remoteAvatar = '') {
       let peer = peers.get(remoteId);
       if (!peer) {
         peer = createPeerConnection(remoteId, remoteName);
         peers.set(remoteId, peer);
-        renderMemberCard(remoteId, remoteName, false);
+        renderMemberCard(remoteId, remoteName, false, 0, remoteAvatar);
         updateMemberCount();
         appendSystemChat(`${remoteName} 加入了语音频道`);
 
         // 无论谁先进入，新发现对方时立即回发定向 hello 确保对方也建立记录
-        sendDirectSignal(remoteId, { type: 'hello', from: myPeerId, name: myNickname });
+        sendDirectSignal(remoteId, { type: 'hello', from: myPeerId, name: myNickname, avatar: myAvatarData });
 
         // 防碰撞规则：ID 字典序较大的一方主动发起 Offer
         if (myPeerId > remoteId) {
@@ -2369,7 +2477,7 @@
       }
     }
 
-    function renderMemberCard(id, name, isSelf, delayMs = 0) {
+    function renderMemberCard(id, name, isSelf, delayMs = 0, avatarData = '') {
       if (document.getElementById(`card_${id}`)) return;
       const grid = document.getElementById('membersGrid');
       const card = document.createElement('div');
@@ -2380,12 +2488,15 @@
       const safeName = escapeHtml(name);
       const firstChar = escapeHtml(name.charAt(0).toUpperCase());
       const gradientClass = isSelf ? 'from-[#a855f7] to-[#06b6d4]' : 'from-[#3b82f6] to-[#a855f7]';
+      const safeAvatar = avatarData && /^data:image\\/jpeg;base64,/.test(avatarData)
+        ? '<img class="member-avatar-image" alt="玩家头像" src="' + avatarData + '">'
+        : firstChar;
 
       card.innerHTML = `
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-3 min-w-0 flex-1">
-            <div id="avatar_${id}" class="w-10 h-10 rounded-full bg-gradient-to-br ${gradientClass} flex items-center justify-center font-bold text-sm text-white shrink-0 transition-all duration-200">
-              ${firstChar}
+            <div id="avatar_${id}" data-name="${firstChar}" class="w-10 h-10 rounded-full bg-gradient-to-br ${gradientClass} flex items-center justify-center font-bold text-sm text-white shrink-0 overflow-hidden transition-all duration-200">
+              ${safeAvatar}
             </div>
             <div class="min-w-0 flex-1">
               <div class="text-sm font-semibold text-slate-100 truncate" title="${safeName}">${safeName}</div>
