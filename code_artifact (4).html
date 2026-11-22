@@ -1,0 +1,2029 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>极简开黑连麦 - 国内公开语音大厅</title>
+  <!-- 加载 Tailwind CSS 构建暗黑电竞开黑界面 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 加载 Inter 字体与系统无衬线中文字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- 优先使用阿里云国内镜像加载 MQTT.js，失败自动切换 BootCDN 备用源 -->
+  <script src="https://registry.npmmirror.com/mqtt/5.3.4/files/dist/mqtt.min.js"
+          onerror="this.onerror=null;this.src='https://cdn.bootcdn.net/ajax/libs/mqtt/5.3.4/mqtt.min.js'"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', '"PingFang SC"', '"Microsoft YaHei"', 'sans-serif'],
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    /* 自定义聊天框与大厅暗黑滚动条 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0d1015;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #262f3f;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #374359;
+    }
+  </style>
+</head>
+<body class="bg-[#0d1015] text-slate-100 font-sans min-h-screen flex flex-col items-center justify-start sm:justify-center p-3 sm:p-6 overflow-x-hidden selection:bg-[#3b82f6] selection:text-white">
+
+  <!-- 全局消息提示条（替代原生 alert） -->
+  <div id="toastBox" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 hidden items-center gap-2 px-4 py-2.5 rounded-xl border text-xs sm:text-sm font-medium shadow-2xl transition-all duration-200 max-w-[92vw]"></div>
+
+  <!-- 主应用外层容器（进入房间后自动加宽以容纳左右双栏布局） -->
+  <main id="mainContainer" class="w-full max-w-4xl bg-[#161b24] border border-[#262f3f] rounded-2xl p-4 sm:p-7 shadow-[0_24px_56px_rgba(0,0,0,0.6)] transition-all duration-300">
+
+    <!-- ==================== 顶部全局状态栏 ==================== -->
+    <header class="flex flex-wrap items-center justify-between gap-3 pb-4 mb-5 border-b border-[#262f3f]">
+      <div class="flex flex-wrap items-center gap-2.5">
+        <h1 class="text-lg sm:text-xl font-bold tracking-wide text-slate-100 flex items-center gap-2">
+          <span>🎙️ 极简开黑连麦</span>
+        </h1>
+        <span class="text-xs font-medium px-2.5 py-1 rounded-lg bg-[#3b82f6]/15 text-[#60a5fa] border border-[#3b82f3]/30">
+          国内公开语音大厅
+        </span>
+      </div>
+
+      <div class="flex items-center gap-3 text-xs">
+        <span id="lobbyOnlineBadge" class="px-2.5 py-1 rounded-lg bg-[#0d1015] border border-[#262f3f] text-slate-300">
+          大厅在线 <strong id="totalOnlineCount" class="text-[#10b981] font-semibold">0</strong> 人
+        </span>
+        <div class="flex items-center gap-1.5 text-slate-400">
+          <span id="headerDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+          <span id="netStatus">正在连接国内节点...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 非 HTTPS / iframe 预览环境提示横幅 -->
+    <div id="httpsWarning" class="hidden mb-5 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs sm:text-sm leading-relaxed">
+      ⚠️ <strong>检测到当前处于受限预览环境或非独立 HTTPS 页面：</strong>真实语音通话需在独立 HTTPS 域名下授权麦克风。你可直接点击下方<strong>「👀 预览房间界面（无需麦克风演示）」</strong>体验多人语音、麦克风增强与实时文字聊天功能。
+    </div>
+
+    <!-- ==================== 视图一：公开语音大厅（入口页） ==================== -->
+    <section id="lobbyView" class="flex flex-col gap-6">
+
+      <!-- 1. 玩家身份与一键进入大厅操作区 -->
+      <div class="bg-[#0d1015] border border-[#262f3f] rounded-2xl p-4 sm:p-5 flex flex-col gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-3.5 items-end">
+          <!-- 昵称输入 + 随机骰子 -->
+          <div class="md:col-span-5 flex flex-col gap-1.5">
+            <label for="nicknameInput" class="text-xs font-medium text-slate-400">你的游戏昵称（留空将自动生成）</label>
+            <div class="relative flex items-center">
+              <input id="nicknameInput" type="text" maxlength="16" placeholder="例如：能量瓶盖 / Lopink"
+                     class="w-full bg-[#161b24] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl pl-3.5 pr-10 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none transition-colors" />
+              <button type="button" onclick="rollRandomNickname()" title="随机生成昵称"
+                      class="absolute right-2 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#222936] transition-colors cursor-pointer">
+                🎲
+              </button>
+            </div>
+          </div>
+
+          <!-- 主行动按钮：一键进入公共语音大厅 -->
+          <div class="md:col-span-7 flex flex-col sm:flex-row gap-2.5">
+            <button id="quickLobbyBtn" type="button" onclick="joinRoom('公共语音大厅')"
+                    class="flex-1 bg-gradient-to-r from-[#3b82f6] to-[#2563eb] hover:from-[#2563eb] hover:to-[#1d4ed8] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm py-3 px-5 rounded-xl shadow-lg shadow-[#3b82f6]/25 transition-all cursor-pointer flex items-center justify-center gap-2">
+              <span>🎙️ 一键进入公共语音大厅</span>
+            </button>
+            <button type="button" onclick="enterDemoMode()"
+                    class="bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-200 font-medium text-xs sm:text-sm py-3 px-4 rounded-xl transition-all cursor-pointer whitespace-nowrap">
+              👀 预览房间界面（无需麦克风演示）
+            </button>
+          </div>
+        </div>
+        <p id="lobbyError" class="hidden text-xs text-red-400"></p>
+      </div>
+
+      <!-- 2. 公开语音频道列表（预设频道 + 实时发现活跃自定义频道） -->
+      <div class="flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm sm:text-base font-semibold text-slate-100 flex items-center gap-2">
+            <span>🌐 公开语音频道列表</span>
+            <span class="text-xs font-normal text-slate-400">点击任意频道即可与在线玩家直接连麦</span>
+          </h2>
+        </div>
+
+        <div id="publicRoomsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          <!-- 由 JS 实时渲染预设房间与动态活跃房间 -->
+        </div>
+      </div>
+
+      <!-- 3. 创建并公开自定义房间 + 高级 STUN/TURN 设置 -->
+      <div class="bg-[#0d1015] border border-[#262f3f] rounded-2xl p-4 flex flex-col gap-3.5">
+        <div class="flex flex-col sm:flex-row gap-2.5">
+          <input id="customRoomInput" type="text" maxlength="20" placeholder="输入自定义房间名（例如：晚上十点内战、8848）"
+                 onkeydown="if(event.key==='Enter') createCustomPublicRoom()"
+                 class="flex-1 bg-[#161b24] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 outline-none transition-colors" />
+          <button type="button" onclick="createCustomPublicRoom()"
+                  class="bg-[#222936] hover:bg-[#2c3546] border border-[#262f3f] text-slate-100 font-medium text-sm py-2.5 px-5 rounded-xl transition-colors cursor-pointer whitespace-nowrap">
+            ➕ 创建并公开房间
+          </button>
+        </div>
+
+        <!-- 可折叠高级网络设置 -->
+        <div class="pt-1 border-t border-[#262f3f]/70 flex flex-col gap-2.5">
+          <button type="button" onclick="toggleAdvanced()"
+                  class="w-fit inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors py-0.5 cursor-pointer">
+            <span>⚙️ 高级网络设置（国内 STUN 节点 / 自定义 TURN 中继）</span>
+            <span id="advArrow" class="text-[10px] transition-transform duration-200">▼</span>
+          </button>
+
+          <div id="advancedBox" class="hidden flex-col gap-3 bg-[#161b24] border border-[#262f3f] rounded-xl p-3.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-xs text-slate-400 leading-relaxed flex-1">
+                默认使用国内公开 STUN 节点（腾讯 <code class="text-slate-300">stun.qq.com</code>、斗鱼 <code class="text-slate-300">stun.douyucdn.cn</code>、小米 <code class="text-slate-300">stun.miwifi.com</code>、B站 <code class="text-slate-300">stun.chat.bilibili.com</code>）进行 P2P 直连。
+              </p>
+              <button type="button" onclick="runNatDiagnostic()"
+                      class="shrink-0 bg-[#222936] hover:bg-[#2c3546] border border-[#3b82f6]/40 text-[#60a5fa] text-xs font-medium px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
+                🔍 检测本机 NAT 类型
+              </button>
+            </div>
+
+            <!-- NAT 诊断结果显示条 -->
+            <div id="natCheckResult" class="hidden text-xs leading-relaxed p-2.5 rounded-lg bg-[#0d1015] border border-[#262f3f] text-slate-300"></div>
+
+            <div class="flex flex-col gap-1">
+              <label for="turnApiUrl" class="text-xs text-slate-400">
+                方式 A：免费 Metered TURN API 链接（推荐，支持手机 4G/5G 热点与校园网穿透，自动保存）
+              </label>
+              <input id="turnApiUrl" type="text" onchange="saveNetworkSettings()"
+                     placeholder="例如：https://你的项目.metered.live/api/v1/turn/credentials?apiKey=你的KEY"
+                     class="w-full bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div class="flex flex-col gap-1">
+                <label for="turnUrl" class="text-xs text-slate-400">方式 B：自建 TURN 服务器地址（可选）</label>
+                <input id="turnUrl" type="text" onchange="saveNetworkSettings()" placeholder="turn:你的服务器IP:3478"
+                       class="w-full bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
+              </div>
+              <div class="flex flex-col gap-1">
+                <label for="turnAuth" class="text-xs text-slate-400">TURN 账号 / 密码（可选，冒号分隔）</label>
+                <input id="turnAuth" type="text" onchange="saveNetworkSettings()" placeholder="username:password"
+                       class="w-full bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 视图二：语音房间内部（左右双栏布局） ==================== -->
+    <section id="roomView" class="hidden flex-col gap-5">
+
+      <!-- 房间顶部信息条 -->
+      <div class="flex flex-wrap items-center justify-between gap-3 bg-[#0d1015] border border-[#262f3f] rounded-xl px-4 py-3">
+        <div class="flex flex-wrap items-center gap-2.5 text-sm">
+          <!-- 在线呼吸灯 -->
+          <span class="relative flex h-2.5 w-2.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10b981] opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#10b981]"></span>
+          </span>
+          <span class="text-slate-300">当前频道：<strong id="displayRoomId" class="text-white font-semibold"></strong></span>
+          <span id="demoTag" class="hidden text-[11px] px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">
+            界面预览演示
+          </span>
+          <span class="text-slate-600">|</span>
+          <span id="memberCount" class="text-xs text-slate-400">1 人在麦</span>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="unlockAudioBtn" type="button" onclick="unlockAllAudioElements()"
+                  class="hidden inline-flex items-center gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-200 text-xs font-semibold px-3 py-2 rounded-xl transition-colors cursor-pointer animate-pulse">
+            <span>🔊 点击恢复声音</span>
+          </button>
+          <button type="button" onclick="toggleInRoomTurnPanel()"
+                  class="inline-flex items-center gap-1.5 bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-300 text-xs font-medium px-3 py-2 rounded-xl transition-colors cursor-pointer">
+            <span>🌐 跨网中继设置</span>
+          </button>
+          <button type="button" onclick="copyInviteLink()"
+                  class="inline-flex items-center gap-1.5 bg-[#222936] hover:bg-[#2c3546] border border-[#262f3f] text-slate-200 text-xs font-medium px-3 py-2 rounded-xl transition-colors cursor-pointer">
+            <span>📋 复制邀请链接</span>
+          </button>
+          <button type="button" onclick="leaveRoom()"
+                  class="inline-flex items-center gap-1.5 bg-red-500/15 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/30 text-xs font-semibold px-3.5 py-2 rounded-xl transition-all cursor-pointer">
+            <span>离开房间</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 房间内快捷 TURN 中继配置面板 -->
+      <div id="inRoomTurnPanel" class="hidden flex-col gap-3 bg-[#0d1015] border border-amber-500/40 rounded-2xl p-4">
+        <div class="flex items-start justify-between gap-2">
+          <div class="text-xs text-amber-200 leading-relaxed">
+            <strong>💡 队友一直连不上或提示 NAT 受限？</strong> 若一方使用手机 4G/5G 流量、热点或校园网，需配置免费 TURN 中继服务器。<strong>只需房主一人填写</strong>，保存后会自动共享给房内所有队友并立即重连：
+          </div>
+          <button type="button" onclick="toggleInRoomTurnPanel()" class="text-xs text-slate-400 hover:text-white px-2 py-1 cursor-pointer">✕</button>
+        </div>
+        <div class="flex flex-col sm:flex-row gap-2.5">
+          <input id="roomTurnApiInput" type="text"
+                 placeholder="粘贴 Metered 免费 TURN API 链接（https://xxx.metered.live/api/v1/turn/credentials?apiKey=...）"
+                 class="flex-1 bg-[#161b24] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
+          <button type="button" onclick="applyInRoomTurnSettings()"
+                  class="bg-[#3b82f6] hover:bg-[#2563eb] text-white text-xs font-semibold px-4 py-2 rounded-xl transition-colors cursor-pointer shrink-0">
+            保存并重连队友
+          </button>
+        </div>
+      </div>
+
+      <!-- 核心双栏网格：桌面端左侧 7 列语音区 + 右侧 5 列实时文字聊天框 -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+
+        <!-- ========== 左侧栏：语音成员列表 + 麦克风增强与降噪面板 ========== -->
+        <div class="lg:col-span-7 flex flex-col gap-4">
+
+          <!-- 1. 在线语音成员卡片网格 -->
+          <div id="membersGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+
+          <!-- 2. 房间内专属：麦克风增强与降噪设置面板 -->
+          <div class="bg-[#0d1015] border border-[#262f3f] rounded-2xl p-4 flex flex-col gap-4">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-sm font-semibold text-slate-100 flex items-center gap-1.5">
+                <span>🎛️ 麦克风增强与降噪设置</span>
+              </h3>
+              <!-- 切换输入设备下拉框 -->
+              <select id="roomMicSelect" onchange="switchMicDevice(this.value)" title="切换麦克风设备"
+                      class="max-w-[200px] bg-[#161b24] border border-[#262f3f] focus:border-[#3b82f6] rounded-lg px-2.5 py-1 text-xs text-slate-200 outline-none truncate">
+                <option value="">默认麦克风设备</option>
+              </select>
+            </div>
+
+            <!-- 麦克风增强（增益 50%~300%）+ 实时电平指示条 -->
+            <div class="flex flex-col gap-2 bg-[#161b24] border border-[#262f3f]/80 rounded-xl p-3">
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-slate-300 font-medium">麦克风音量增强（Mic Boost）</span>
+                <span id="micBoostValue" class="font-mono font-semibold text-[#3b82f6]">100%</span>
+              </div>
+
+              <div class="flex items-center gap-3">
+                <span class="text-[11px] text-slate-500 font-mono">50%</span>
+                <input id="micBoostSlider" type="range" min="50" max="300" step="5" value="100"
+                       oninput="updateMicBoost(this.value)"
+                       class="flex-1 h-1.5 bg-[#0d1015] rounded-lg accent-[#3b82f6] cursor-pointer" />
+                <span class="text-[11px] text-slate-500 font-mono">300%</span>
+              </div>
+
+              <!-- 实时麦克风输入电平条 -->
+              <div class="flex items-center gap-2 pt-1">
+                <span class="text-[11px] text-slate-400 shrink-0">输入电平</span>
+                <div class="flex-1 h-2 bg-[#0d1015] rounded-full overflow-hidden p-[1px] border border-[#262f3f]/60">
+                  <div id="micLevelBar" class="h-full w-0 rounded-full bg-gradient-to-r from-[#10b981] via-emerald-400 to-amber-400 transition-all duration-75"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- AI 降噪 / 回声消除 / 自动增益 实时开关按钮 -->
+            <div class="grid grid-cols-3 gap-2">
+              <button id="btnNoise" type="button" onclick="toggleAudioConstraint('noiseSuppression')"
+                      class="py-2 px-2.5 rounded-xl border text-xs font-medium transition-all cursor-pointer bg-[#10b981]/15 border-[#10b981]/40 text-[#10b981]">
+                ✨ AI降噪：开
+              </button>
+              <button id="btnEcho" type="button" onclick="toggleAudioConstraint('echoCancellation')"
+                      class="py-2 px-2.5 rounded-xl border text-xs font-medium transition-all cursor-pointer bg-[#10b981]/15 border-[#10b981]/40 text-[#10b981]">
+                🔇 回声消除：开
+              </button>
+              <button id="btnGain" type="button" onclick="toggleAudioConstraint('autoGainControl')"
+                      class="py-2 px-2.5 rounded-xl border text-xs font-medium transition-all cursor-pointer bg-[#10b981]/15 border-[#10b981]/40 text-[#10b981]">
+                📈 自动增益：开
+              </button>
+            </div>
+          </div>
+
+          <!-- 3. 底部核心语音控制按钮栏 -->
+          <div class="grid grid-cols-2 gap-3">
+            <button id="muteMicBtn" type="button" onclick="toggleMic()"
+                    class="bg-[#222936] hover:bg-[#2c3546] border border-[#262f3f] text-slate-100 text-sm font-medium py-3 px-4 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2">
+              <span>🎤 麦克风：开启</span>
+            </button>
+            <button id="deafenBtn" type="button" onclick="toggleDeafen()"
+                    class="bg-[#222936] hover:bg-[#2c3546] border border-[#262f3f] text-slate-100 text-sm font-medium py-3 px-4 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2">
+              <span>🎧 听筒：正常</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ========== 右侧栏：房间实时文字聊天框 ========== -->
+        <div class="lg:col-span-5 bg-[#0d1015] border border-[#262f3f] rounded-2xl flex flex-col h-[430px] lg:h-[530px] overflow-hidden">
+          <!-- 聊天框头部 -->
+          <div class="px-4 py-3 border-b border-[#262f3f] flex items-center justify-between bg-[#161b24]/60">
+            <span class="text-sm font-semibold text-slate-100 flex items-center gap-1.5">
+              <span>💬 房间实时文字聊天</span>
+            </span>
+            <span class="text-[11px] text-slate-400">支持发送车队码 / ID</span>
+          </div>
+
+          <!-- 聊天消息滚动区域 -->
+          <div id="chatMessages" class="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
+            <!-- 动态插入聊天气泡与系统提示 -->
+          </div>
+
+          <!-- 快捷开黑短语栏 -->
+          <div class="px-3 py-2 border-t border-[#262f3f]/70 bg-[#161b24]/40 flex items-center gap-1.5 overflow-x-auto">
+            <span class="text-[11px] text-slate-500 shrink-0">快捷：</span>
+            <button type="button" onclick="sendQuickPhrase('上号开黑')"
+                    class="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-300 transition-colors cursor-pointer">
+              上号开黑
+            </button>
+            <button type="button" onclick="sendQuickPhrase('拉我一下')"
+                    class="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-300 transition-colors cursor-pointer">
+              拉我一下
+            </button>
+            <button type="button" onclick="sendQuickPhrase('等我1分钟')"
+                    class="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-300 transition-colors cursor-pointer">
+              等我1分钟
+            </button>
+            <button type="button" onclick="sendQuickPhrase('已开麦')"
+                    class="shrink-0 text-xs px-2.5 py-1 rounded-lg bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-300 transition-colors cursor-pointer">
+              已开麦
+            </button>
+          </div>
+
+          <!-- 底部文字输入框与发送按钮 -->
+          <div class="p-3 border-t border-[#262f3f] bg-[#161b24]/70 flex items-center gap-2">
+            <input id="chatInput" type="text" maxlength="200" placeholder="输入文字消息或粘贴车队码，回车发送..."
+                   onkeydown="if(event.key==='Enter') sendChatMessage()"
+                   class="flex-1 bg-[#0d1015] border border-[#262f3f] focus:border-[#3b82f6] rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 outline-none transition-colors" />
+            <button type="button" onclick="sendChatMessage()"
+                    class="bg-[#3b82f6] hover:bg-[#2563eb] text-white text-xs sm:text-sm font-semibold px-4 py-2 rounded-xl transition-colors cursor-pointer shrink-0">
+              发送
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    /**
+     * ============================================================
+     * 1. 国内公开网络适配与信令配置
+     * ============================================================
+     */
+    const SIGNALING_BROKERS = [
+      'wss://broker-cn.emqx.io:8084/mqtt',
+      'wss://broker.emqx.io:8084/mqtt'
+    ];
+    const TOPIC_LOBBY = 'cn-voice-mesh/v3/lobby';
+    const TOPIC_ROOM_PREFIX = 'cn-voice-mesh/v3/room';
+
+    // 自定义 TURN 服务器预留配置（可直接在此硬编码自建 Coturn 服务器，群友打开即用）
+    const CUSTOM_TURN_SERVERS = [
+      // { urls: 'turn:你的服务器IP:3478', username: 'username', credential: 'password' }
+    ];
+
+    // 国内公开低延迟 STUN 服务器列表（纯国内直连，不依赖海外服务器）
+    const DEFAULT_ICE_SERVERS = [
+      { urls: 'stun:stun.qq.com:3478' },
+      { urls: 'stun:stun.miwifi.com:3478' },
+      { urls: 'stun:stun.chat.bilibili.com:3478' },
+      { urls: 'stun:stun.douyucdn.cn:18000' }
+    ];
+
+    // 预设公开语音频道
+    const PRESET_ROOMS = [
+      { id: '公共语音大厅', icon: '🔥', desc: '全站默认公开语音广场，随时开麦交流' },
+      { id: '吃鸡开黑车队', icon: '🪂', desc: '四排跳伞报点、高倍镜物资呼叫频道' },
+      { id: 'LOL十人内战房', icon: '⚔️', desc: '召唤师峡谷组排、大乱斗语音沟通' }
+    ];
+
+    /**
+     * ============================================================
+     * 2. 全局运行时状态
+     * ============================================================
+     */
+    let mqttClient = null;
+    let brokerIndex = 0;
+    let isMqttConnected = false;
+    let isWebSocketBlocked = false;
+
+    const myPeerId = 'u_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+    let myNickname = '';
+    let currentRoomId = '';
+    let isInRoom = false;
+    let isDemoMode = false;
+
+    // 麦克风与音频处理状态
+    let isMicMuted = false;
+    let isDeafened = false;
+    const audioConstraints = {
+      noiseSuppression: true,
+      echoCancellation: true,
+      autoGainControl: true
+    };
+    let selectedDeviceId = '';
+    let micBoostPercent = 100;
+
+    // Web Audio API 本地麦克风增益与电平管线
+    let rawMicStream = null;
+    let processedStream = null;
+    let audioCtx = null;
+    let micSourceNode = null;
+    let micGainNode = null;
+    let micAnalyserNode = null;
+    let micDestinationNode = null;
+    let localMeterRaf = null;
+
+    // 房间内 Peer 连接池：Map<peerId, PeerState>
+    const peers = new Map();
+
+    // 大厅在线用户发现表：Map<peerId, { name, roomId, lastSeen }>
+    const lobbyUsers = new Map();
+    let lobbyCleanupTimer = null;
+    let roomHeartbeatTimer = null;
+
+    // 缓存从 Metered API 获取的动态 TURN 凭证
+    let cachedTurnServers = [];
+    let sharedTurnApiUrl = '';
+
+    /**
+     * ============================================================
+     * 3. 安全存储、消息提示与剪贴板工具
+     * ============================================================
+     */
+    function safeGetStorage(key, fallback = '') {
+      try {
+        return localStorage.getItem(key) || fallback;
+      } catch (e) {
+        return fallback;
+      }
+    }
+
+    function safeSetStorage(key, val) {
+      try {
+        localStorage.setItem(key, val);
+      } catch (e) {
+        // 沙盒环境下忽略存储受限异常
+      }
+    }
+
+    let toastTimer = null;
+    function showToast(msg, type = 'info') {
+      const box = document.getElementById('toastBox');
+      if (!box) return;
+      box.textContent = msg;
+      box.className = 'fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl border text-xs sm:text-sm font-medium shadow-2xl transition-all duration-200 max-w-[92vw] ';
+      if (type === 'error') {
+        box.className += 'bg-red-950/95 border-red-500/50 text-red-200';
+      } else if (type === 'success') {
+        box.className += 'bg-emerald-950/95 border-emerald-500/50 text-emerald-200';
+      } else {
+        box.className += 'bg-[#161b24]/95 border-[#3b82f6]/50 text-slate-100';
+      }
+      box.classList.remove('hidden');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        box.classList.add('hidden');
+      }, 3200);
+    }
+
+    function copyTextToClipboard(text) {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return ok;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    /**
+     * ============================================================
+     * 4. UI 交互与网络设置辅助函数
+     * ============================================================
+     */
+    function rollRandomNickname() {
+      const prefixes = ['能量', '量子', '霓虹', '星际', '极速', '暗影', '疾风', '烈焰', '冰霜', '幻影'];
+      const nouns = ['瓶盖', '游侠', '猎手', '指挥官', '突击手', '狙击手', '领航员', '战术师', '先锋', '战神'];
+      const p = prefixes[Math.floor(Math.random() * prefixes.length)];
+      const n = nouns[Math.floor(Math.random() * nouns.length)];
+      const num = Math.floor(10 + Math.random() * 89);
+      const name = `${p}${n}_${num}`;
+      const input = document.getElementById('nicknameInput');
+      if (input) input.value = name;
+      safeSetStorage('voice_nickname', name);
+    }
+
+    function toggleAdvanced() {
+      const box = document.getElementById('advancedBox');
+      const arrow = document.getElementById('advArrow');
+      if (!box) return;
+      const isHidden = box.classList.contains('hidden');
+      if (isHidden) {
+        box.classList.remove('hidden');
+        box.classList.add('flex');
+        if (arrow) arrow.style.transform = 'rotate(180deg)';
+      } else {
+        box.classList.add('hidden');
+        box.classList.remove('flex');
+        if (arrow) arrow.style.transform = 'rotate(0deg)';
+      }
+    }
+
+    function toggleInRoomTurnPanel() {
+      const panel = document.getElementById('inRoomTurnPanel');
+      if (!panel) return;
+      const isHidden = panel.classList.contains('hidden');
+      if (isHidden) {
+        panel.classList.remove('hidden');
+        panel.classList.add('flex');
+        const roomTurnInput = document.getElementById('roomTurnApiInput');
+        const mainTurnInput = document.getElementById('turnApiUrl');
+        if (roomTurnInput && mainTurnInput && !roomTurnInput.value) {
+          roomTurnInput.value = mainTurnInput.value || sharedTurnApiUrl || '';
+        }
+      } else {
+        panel.classList.add('hidden');
+        panel.classList.remove('flex');
+      }
+    }
+
+    function updateHeaderStatus(connected, text) {
+      const dot = document.getElementById('headerDot');
+      const label = document.getElementById('netStatus');
+      if (label) label.textContent = text;
+      if (dot) {
+        dot.className = connected
+          ? 'w-2 h-2 rounded-full bg-[#10b981]'
+          : 'w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+      }
+    }
+
+    function handleSandboxWebSocketBlocked() {
+      isWebSocketBlocked = true;
+      isMqttConnected = false;
+      updateHeaderStatus(false, '预览沙盒模式（离线）');
+
+      const warn = document.getElementById('httpsWarning');
+      if (warn) warn.classList.remove('hidden');
+
+      // 在受限预览沙盒中填充模拟大厅在线状态，部署到 GitHub Pages 后会自动切换为真实联机
+      const now = Date.now();
+      lobbyUsers.set('preview_u1', { name: '能量瓶盖', roomId: '公共语音大厅', lastSeen: now });
+      lobbyUsers.set('preview_u2', { name: '涛古', roomId: '公共语音大厅', lastSeen: now });
+      renderLobbyRooms();
+    }
+
+    function loadNetworkSettings() {
+      const savedApi = safeGetStorage('voice_turn_api', '');
+      const savedUrl = safeGetStorage('voice_turn_url', '');
+      const savedAuth = safeGetStorage('voice_turn_auth', '');
+
+      const apiEl = document.getElementById('turnApiUrl');
+      const urlEl = document.getElementById('turnUrl');
+      const authEl = document.getElementById('turnAuth');
+
+      if (apiEl && savedApi) apiEl.value = savedApi;
+      if (urlEl && savedUrl) urlEl.value = savedUrl;
+      if (authEl && savedAuth) authEl.value = savedAuth;
+    }
+
+    function saveNetworkSettings() {
+      const apiVal = (document.getElementById('turnApiUrl')?.value || '').trim();
+      const urlVal = (document.getElementById('turnUrl')?.value || '').trim();
+      const authVal = (document.getElementById('turnAuth')?.value || '').trim();
+
+      safeSetStorage('voice_turn_api', apiVal);
+      safeSetStorage('voice_turn_url', urlVal);
+      safeSetStorage('voice_turn_auth', authVal);
+      cachedTurnServers = [];
+      showToast('网络中继配置已保存', 'success');
+    }
+
+    async function fetchMeteredTurnServers(apiUrl) {
+      if (!apiUrl || !apiUrl.startsWith('http')) return [];
+      try {
+        const res = await fetch(apiUrl);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function resolveIceServers() {
+      const servers = [...DEFAULT_ICE_SERVERS, ...CUSTOM_TURN_SERVERS];
+
+      // 方式 B：自建 TURN
+      const manualUrl = (document.getElementById('turnUrl')?.value || '').trim();
+      const manualAuth = (document.getElementById('turnAuth')?.value || '').trim();
+      if (manualUrl) {
+        const entry = { urls: manualUrl };
+        if (manualAuth.includes(':')) {
+          const [u, ...rest] = manualAuth.split(':');
+          entry.username = u;
+          entry.credential = rest.join(':');
+        }
+        servers.push(entry);
+      }
+
+      // 方式 A：Metered TURN API
+      const apiUrl = (document.getElementById('turnApiUrl')?.value || sharedTurnApiUrl || '').trim();
+      if (apiUrl) {
+        if (cachedTurnServers.length === 0) {
+          cachedTurnServers = await fetchMeteredTurnServers(apiUrl);
+        }
+        if (cachedTurnServers.length > 0) {
+          servers.push(...cachedTurnServers);
+        }
+      }
+
+      return servers;
+    }
+
+    async function applyInRoomTurnSettings() {
+      const val = (document.getElementById('roomTurnApiInput')?.value || '').trim();
+      const mainApiEl = document.getElementById('turnApiUrl');
+      if (mainApiEl) mainApiEl.value = val;
+      sharedTurnApiUrl = val;
+      saveNetworkSettings();
+
+      if (val) {
+        cachedTurnServers = await fetchMeteredTurnServers(val);
+        if (cachedTurnServers.length === 0) {
+          showToast('未能从该 API 链接获取 TURN 凭证，请检查链接是否完整', 'error');
+          return;
+        }
+        // 同步 TURN API 链接给当前房间的其他队友
+        publishRoomSignal({
+          type: 'turn_sync',
+          from: myPeerId,
+          turnApiUrl: val
+        });
+        appendSystemChat(`🌐 已配置并共享 TURN 中继节点，正在为 ${peers.size} 位队友重新建立连接...`);
+      }
+
+      toggleInRoomTurnPanel();
+      for (const remoteId of peers.keys()) {
+        await triggerIceRestart(remoteId);
+      }
+    }
+
+    async function runNatDiagnostic() {
+      const box = document.getElementById('natCheckResult');
+      if (!box) return;
+      box.classList.remove('hidden');
+      box.innerHTML = '⏳ 正在通过国内 STUN 节点检测本机 NAT 映射端口，请稍候（约 2 秒）...';
+
+      try {
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.qq.com:3478' },
+            { urls: 'stun:stun.miwifi.com:3478' }
+          ]
+        });
+        pc.createDataChannel('nat-probe');
+        const mappedPorts = new Set();
+
+        pc.onicecandidate = (e) => {
+          if (e.candidate && e.candidate.type === 'srflx') {
+            mappedPorts.add(`${e.candidate.address}:${e.candidate.port}`);
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        await new Promise((resolve) => setTimeout(resolve, 2200));
+        pc.close();
+
+        if (mappedPorts.size === 0) {
+          box.innerHTML = '⚠️ <strong>未获取到公网映射地址：</strong>当前网络可能屏蔽了 UDP 端口或处于受限沙盒，建议配置上方的 TURN 中继链接。';
+        } else if (mappedPorts.size === 1) {
+          const addr = Array.from(mappedPorts)[0];
+          box.innerHTML = `✅ <strong>检测到锥形 NAT（P2P 友好网络）：</strong>公网映射为 <code class="text-[#10b981]">${escapeHtml(addr)}</code>，可直接与宽带 Wi-Fi 队友高速 P2P 直连。`;
+        } else {
+          box.innerHTML = `⚠️ <strong>检测到对称型 NAT（Symmetric NAT）：</strong>系统为不同服务器分配了 ${mappedPorts.size} 个不同公网端口（常见于手机 4G/5G 热点或校园网）。与同样受限的网络连麦时，建议在上方填入免费的 Metered TURN API 链接。`;
+        }
+      } catch (err) {
+        box.innerHTML = `❌ NAT 检测失败：${escapeHtml(err.message || '浏览器不支持 WebRTC')}`;
+      }
+    }
+
+    /**
+     * ============================================================
+     * 5. MQTT 信令连接与大厅房间实时发现
+     * ============================================================
+     */
+    function initGlobalMqtt() {
+      if (isWebSocketBlocked) return;
+
+      if (typeof mqtt === 'undefined') {
+        updateHeaderStatus(false, '信令库加载中...');
+        setTimeout(initGlobalMqtt, 800);
+        return;
+      }
+
+      if (mqttClient) {
+        try { mqttClient.end(true); } catch (e) {}
+      }
+
+      const brokerUrl = SIGNALING_BROKERS[brokerIndex % SIGNALING_BROKERS.length];
+      updateHeaderStatus(false, '正在连接国内节点...');
+
+      // 预检当前环境是否允许建立 WebSocket 连接（避免 Canvas 预览沙盒抛出未捕获 SecurityError）
+      try {
+        const probeWs = new WebSocket(brokerUrl);
+        probeWs.onopen = () => { try { probeWs.close(); } catch (e) {} };
+        probeWs.onerror = () => {};
+      } catch (err) {
+        handleSandboxWebSocketBlocked();
+        return;
+      }
+
+      try {
+        mqttClient = mqtt.connect(brokerUrl, {
+          clientId: 'cn_vc_' + myPeerId + '_' + Math.floor(Math.random() * 1000),
+          clean: true,
+          connectTimeout: 6000,
+          reconnectPeriod: 3000
+        });
+      } catch (err) {
+        handleSandboxWebSocketBlocked();
+        return;
+      }
+
+      mqttClient.on('connect', () => {
+        isMqttConnected = true;
+        updateHeaderStatus(true, '国内节点已连接');
+        mqttClient.subscribe(TOPIC_LOBBY, { qos: 0 });
+
+        // 广播大厅在线心跳
+        publishLobbySignal({
+          type: 'lobby_ping',
+          from: myPeerId,
+          name: myNickname || '游客',
+          roomId: isInRoom ? currentRoomId : ''
+        });
+
+        // 若正处于房间内，重新订阅当前房间主题并宣布上线
+        if (isInRoom && !isDemoMode && currentRoomId) {
+          const roomTopic = `${TOPIC_ROOM_PREFIX}/${encodeURIComponent(currentRoomId)}`;
+          mqttClient.subscribe(roomTopic, { qos: 1 }, (err) => {
+            if (!err) {
+              publishRoomSignal({
+                type: 'hello',
+                from: myPeerId,
+                name: myNickname
+              });
+            }
+          });
+        }
+      });
+
+      mqttClient.on('error', (err) => {
+        isMqttConnected = false;
+        const errInfo = err ? `${err.name || ''} ${err.message || ''}` : '';
+        if (errInfo.includes('SecurityError') || errInfo.includes('not allowed')) {
+          try { mqttClient.end(true); } catch (e) {}
+          handleSandboxWebSocketBlocked();
+          return;
+        }
+        brokerIndex += 1;
+        updateHeaderStatus(false, '切换备用节点...');
+      });
+
+      mqttClient.on('close', () => {
+        if (isWebSocketBlocked) return;
+        isMqttConnected = false;
+        updateHeaderStatus(false, '信令重连中...');
+      });
+
+      mqttClient.on('message', async (topic, payload) => {
+        let msg;
+        try {
+          msg = JSON.parse(payload.toString());
+        } catch (e) {
+          return;
+        }
+        if (!msg || msg.from === myPeerId) return;
+
+        // 1. 大厅在线状态消息
+        if (topic === TOPIC_LOBBY) {
+          if (msg.type === 'lobby_ping') {
+            lobbyUsers.set(msg.from, {
+              name: msg.name || '玩家',
+              roomId: msg.roomId || '',
+              lastSeen: Date.now()
+            });
+            renderLobbyRooms();
+          } else if (msg.type === 'lobby_leave') {
+            lobbyUsers.delete(msg.from);
+            renderLobbyRooms();
+          }
+          return;
+        }
+
+        // 2. 当前语音频道内部信令消息
+        const expectedTopic = `${TOPIC_ROOM_PREFIX}/${encodeURIComponent(currentRoomId)}`;
+        if (isInRoom && !isDemoMode && topic === expectedTopic) {
+          if (msg.to && msg.to !== myPeerId) return;
+          await handleRoomSignal(msg);
+        }
+      });
+    }
+
+    function publishLobbySignal(payloadObj) {
+      if (!mqttClient || !isMqttConnected || isWebSocketBlocked) return;
+      try {
+        mqttClient.publish(TOPIC_LOBBY, JSON.stringify(payloadObj), { qos: 0 });
+      } catch (e) {}
+    }
+
+    function publishRoomSignal(payloadObj) {
+      if (!mqttClient || !isMqttConnected || isWebSocketBlocked || !currentRoomId) return;
+      try {
+        const roomTopic = `${TOPIC_ROOM_PREFIX}/${encodeURIComponent(currentRoomId)}`;
+        mqttClient.publish(roomTopic, JSON.stringify(payloadObj), { qos: 1 });
+      } catch (e) {}
+    }
+
+    function renderLobbyRooms() {
+      const now = Date.now();
+      for (const [uid, info] of lobbyUsers.entries()) {
+        if (now - info.lastSeen > 20000) {
+          lobbyUsers.delete(uid);
+        }
+      }
+
+      const totalCountEl = document.getElementById('totalOnlineCount');
+      if (totalCountEl) {
+        totalCountEl.textContent = String(Math.max(1, lobbyUsers.size));
+      }
+
+      // 按房间分组在线成员
+      const roomMap = new Map();
+      PRESET_ROOMS.forEach((r) => {
+        roomMap.set(r.id, { ...r, users: [] });
+      });
+
+      for (const [uid, info] of lobbyUsers.entries()) {
+        if (info.roomId) {
+          if (!roomMap.has(info.roomId)) {
+            roomMap.set(info.roomId, {
+              id: info.roomId,
+              icon: '🎮',
+              desc: '玩家创建的公开语音房间',
+              users: []
+            });
+          }
+          roomMap.get(info.roomId).users.push(info.name || '玩家');
+        }
+      }
+
+      const grid = document.getElementById('publicRoomsGrid');
+      if (!grid) return;
+
+      grid.innerHTML = Array.from(roomMap.values()).map((room) => {
+        const count = room.users.length;
+        const userBadges = count > 0
+          ? room.users.slice(0, 4).map((u) => `<span class="px-2 py-0.5 rounded-md bg-[#161b24] border border-[#262f3f] text-[11px] text-slate-300 truncate max-w-[90px]">${escapeHtml(u)}</span>`).join('')
+            + (count > 4 ? `<span class="text-[11px] text-slate-400">+${count - 4}</span>` : '')
+          : '<span class="text-[11px] text-slate-500">当前空房，点击抢占沙发</span>';
+
+        return `
+          <div onclick="joinRoom('${escapeHtml(room.id).replace(/'/g, "\\'")}')"
+               class="group bg-[#0d1015] hover:bg-[#1a212d] border border-[#262f3f] hover:border-[#3b82f6]/60 rounded-2xl p-4 flex flex-col justify-between gap-3 transition-all cursor-pointer">
+            <div class="flex flex-col gap-1.5">
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-semibold text-sm text-slate-100 group-hover:text-[#60a5fa] transition-colors truncate">
+                  ${room.icon} ${escapeHtml(room.id)}
+                </span>
+                <span class="shrink-0 text-[11px] font-medium px-2 py-0.5 rounded-full ${count > 0 ? 'bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/30' : 'bg-[#161b24] text-slate-400 border border-[#262f3f]'}">
+                  ${count} 人在麦
+                </span>
+              </div>
+              <p class="text-xs text-slate-400 line-clamp-1">${escapeHtml(room.desc)}</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-[#262f3f]/60 min-h-[28px]">
+              ${userBadges}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function createCustomPublicRoom() {
+      const input = document.getElementById('customRoomInput');
+      const roomName = (input?.value || '').trim();
+      if (!roomName) {
+        showToast('请先输入自定义房间名称', 'error');
+        input?.focus();
+        return;
+      }
+      joinRoom(roomName);
+    }
+
+    /**
+     * ============================================================
+     * 6. 本地 Web Audio 音频处理管线（降噪 + 增益放大 + 实时电平）
+     * ============================================================
+     */
+    async function refreshMicDeviceList() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const mics = devices.filter((d) => d.kind === 'audioinput');
+        const select = document.getElementById('roomMicSelect');
+        if (!select) return;
+
+        select.innerHTML = '<option value="">默认麦克风设备</option>' +
+          mics.map((m, idx) => {
+            const label = m.label || `麦克风设备 ${idx + 1}`;
+            const selected = m.deviceId === selectedDeviceId ? 'selected' : '';
+            return `<option value="${escapeHtml(m.deviceId)}" ${selected}>${escapeHtml(label)}</option>`;
+          }).join('');
+      } catch (e) {}
+    }
+
+    async function initLocalAudioPipeline() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('当前浏览器不支持麦克风采集，请使用 Chrome / Edge / Safari 独立 HTTPS 页面打开');
+      }
+
+      const audioOpts = {
+        noiseSuppression: audioConstraints.noiseSuppression,
+        echoCancellation: audioConstraints.echoCancellation,
+        autoGainControl: audioConstraints.autoGainControl
+      };
+      if (selectedDeviceId) {
+        audioOpts.deviceId = { exact: selectedDeviceId };
+      }
+
+      const newRawStream = await navigator.mediaDevices.getUserMedia({
+        audio: audioOpts,
+        video: false
+      });
+
+      if (rawMicStream) {
+        rawMicStream.getTracks().forEach((t) => t.stop());
+      }
+      rawMicStream = newRawStream;
+
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!audioCtx) {
+        audioCtx = new AudioContextClass();
+      }
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+
+      if (micSourceNode) {
+        try { micSourceNode.disconnect(); } catch (e) {}
+      }
+
+      micSourceNode = audioCtx.createMediaStreamSource(rawMicStream);
+
+      if (!micGainNode) {
+        micGainNode = audioCtx.createGain();
+      }
+      micGainNode.gain.value = isMicMuted ? 0 : (micBoostPercent / 100);
+
+      if (!micAnalyserNode) {
+        micAnalyserNode = audioCtx.createAnalyser();
+        micAnalyserNode.fftSize = 256;
+      }
+
+      if (!micDestinationNode) {
+        micDestinationNode = audioCtx.createMediaStreamDestination();
+      }
+
+      micSourceNode.connect(micGainNode);
+      micGainNode.connect(micAnalyserNode);
+      micGainNode.connect(micDestinationNode);
+
+      processedStream = micDestinationNode.stream;
+      processedStream.getAudioTracks().forEach((t) => {
+        t.enabled = !isMicMuted;
+      });
+
+      // 热替换已建立连接中的发送音轨
+      const newTrack = processedStream.getAudioTracks()[0];
+      if (newTrack) {
+        for (const peer of peers.values()) {
+          if (peer.pc) {
+            const sender = peer.pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+            if (sender) {
+              await sender.replaceTrack(newTrack);
+            }
+          }
+        }
+      }
+
+      await refreshMicDeviceList();
+      startLocalLevelMeter();
+    }
+
+    function startLocalLevelMeter() {
+      if (localMeterRaf) cancelAnimationFrame(localMeterRaf);
+      const dataArray = new Uint8Array(micAnalyserNode ? micAnalyserNode.frequencyBinCount : 64);
+
+      const tick = () => {
+        if (!isInRoom) return;
+
+        let levelPct = 0;
+        if (isDemoMode) {
+          levelPct = isMicMuted ? 0 : Math.max(8, Math.floor(25 + Math.sin(Date.now() / 220) * 22 + Math.random() * 15));
+        } else if (micAnalyserNode && !isMicMuted) {
+          micAnalyserNode.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          const avg = sum / dataArray.length;
+          levelPct = Math.min(100, Math.round((avg / 90) * 100));
+        }
+
+        const bar = document.getElementById('micLevelBar');
+        if (bar) bar.style.width = `${levelPct}%`;
+
+        const myCard = document.getElementById('memberCard_me');
+        if (myCard) {
+          if (levelPct > 14 && !isMicMuted) {
+            myCard.classList.add('border-[#10b981]', 'shadow-[0_0_20px_rgba(16,185,129,0.28)]');
+            myCard.classList.remove('border-[#262f3f]');
+          } else {
+            myCard.classList.remove('border-[#10b981]', 'shadow-[0_0_20px_rgba(16,185,129,0.28)]');
+            myCard.classList.add('border-[#262f3f]');
+          }
+        }
+
+        localMeterRaf = requestAnimationFrame(tick);
+      };
+      localMeterRaf = requestAnimationFrame(tick);
+    }
+
+    function updateMicBoost(val) {
+      micBoostPercent = Number(val) || 100;
+      const label = document.getElementById('micBoostValue');
+      if (label) label.textContent = `${micBoostPercent}%`;
+      if (micGainNode && !isMicMuted) {
+        micGainNode.gain.value = micBoostPercent / 100;
+      }
+    }
+
+    async function toggleAudioConstraint(key) {
+      audioConstraints[key] = !audioConstraints[key];
+      updateConstraintButtonsUI();
+
+      if (!isDemoMode && isInRoom) {
+        try {
+          await initLocalAudioPipeline();
+          showToast('音频降噪参数已实时生效', 'success');
+        } catch (err) {
+          showToast('切换音频参数失败：' + (err.message || err), 'error');
+        }
+      } else {
+        showToast('演示模式：已切换参数状态', 'info');
+      }
+    }
+
+    function updateConstraintButtonsUI() {
+      const map = [
+        { id: 'btnNoise', key: 'noiseSuppression', label: '✨ AI降噪' },
+        { id: 'btnEcho', key: 'echoCancellation', label: '🔇 回声消除' },
+        { id: 'btnGain', key: 'autoGainControl', label: '📈 自动增益' }
+      ];
+      map.forEach((item) => {
+        const btn = document.getElementById(item.id);
+        if (!btn) return;
+        const active = audioConstraints[item.key];
+        btn.textContent = `${item.label}：${active ? '开' : '关'}`;
+        btn.className = active
+          ? 'py-2 px-2.5 rounded-xl border text-xs font-medium transition-all cursor-pointer bg-[#10b981]/15 border-[#10b981]/40 text-[#10b981]'
+          : 'py-2 px-2.5 rounded-xl border text-xs font-medium transition-all cursor-pointer bg-[#161b24] border-[#262f3f] text-slate-400';
+      });
+    }
+
+    async function switchMicDevice(deviceId) {
+      selectedDeviceId = deviceId;
+      if (!isDemoMode && isInRoom) {
+        try {
+          await initLocalAudioPipeline();
+          showToast('已切换麦克风输入设备', 'success');
+        } catch (err) {
+          showToast('切换麦克风失败：' + (err.message || err), 'error');
+        }
+      }
+    }
+
+    function toggleMic() {
+      isMicMuted = !isMicMuted;
+      if (processedStream) {
+        processedStream.getAudioTracks().forEach((t) => {
+          t.enabled = !isMicMuted;
+        });
+      }
+      if (micGainNode) {
+        micGainNode.gain.value = isMicMuted ? 0 : (micBoostPercent / 100);
+      }
+
+      const btn = document.getElementById('muteMicBtn');
+      if (btn) {
+        if (isMicMuted) {
+          btn.innerHTML = '<span>🔇 麦克风：已静音</span>';
+          btn.className = 'bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 text-sm font-medium py-3 px-4 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2';
+        } else {
+          btn.innerHTML = '<span>🎤 麦克风：开启</span>';
+          btn.className = 'bg-[#222936] hover:bg-[#2c3546] border border-[#262f3f] text-slate-100 text-sm font-medium py-3 px-4 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2';
+        }
+      }
+      renderMembersGrid();
+    }
+
+    function toggleDeafen() {
+      isDeafened = !isDeafened;
+      for (const peer of peers.values()) {
+        if (peer.audioEl) {
+          peer.audioEl.muted = isDeafened;
+        }
+      }
+      const btn = document.getElementById('deafenBtn');
+      if (btn) {
+        if (isDeafened) {
+          btn.innerHTML = '<span>🔕 听筒：已屏蔽队友</span>';
+          btn.className = 'bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-200 text-sm font-medium py-3 px-4 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2';
+        } else {
+          btn.innerHTML = '<span>🎧 听筒：正常</span>';
+          btn.className = 'bg-[#222936] hover:bg-[#2c3546] border border-[#262f3f] text-slate-100 text-sm font-medium py-3 px-4 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2';
+        }
+      }
+    }
+
+    /**
+     * ============================================================
+     * 7. 加入房间、演示模式与离开房间生命周期
+     * ============================================================
+     */
+    function ensureNickname() {
+      const input = document.getElementById('nicknameInput');
+      let val = (input?.value || '').trim();
+      if (!val) {
+        rollRandomNickname();
+        val = (input?.value || '').trim() || '开黑玩家';
+      }
+      myNickname = val;
+      safeSetStorage('voice_nickname', myNickname);
+      return myNickname;
+    }
+
+    function switchToRoomUI(roomName, demo) {
+      currentRoomId = roomName;
+      isInRoom = true;
+      isDemoMode = demo;
+
+      const mainContainer = document.getElementById('mainContainer');
+      if (mainContainer) {
+        mainContainer.classList.remove('max-w-4xl');
+        mainContainer.classList.add('max-w-6xl');
+      }
+
+      document.getElementById('lobbyView')?.classList.add('hidden');
+      const roomView = document.getElementById('roomView');
+      if (roomView) {
+        roomView.classList.remove('hidden');
+        roomView.classList.add('flex');
+      }
+
+      const displayRoomEl = document.getElementById('displayRoomId');
+      if (displayRoomEl) displayRoomEl.textContent = roomName;
+
+      const demoTag = document.getElementById('demoTag');
+      if (demoTag) {
+        if (demo) demoTag.classList.remove('hidden');
+        else demoTag.classList.add('hidden');
+      }
+
+      const chatBox = document.getElementById('chatMessages');
+      if (chatBox) chatBox.innerHTML = '';
+    }
+
+    function enterDemoMode() {
+      ensureNickname();
+      switchToRoomUI('公共语音大厅', true);
+
+      // 注入模拟队友用于界面与音量滑块演示
+      peers.clear();
+      peers.set('demo_1', {
+        id: 'demo_1',
+        name: '能量瓶盖',
+        statusText: '● P2P 已直连 (24ms)',
+        statusColor: 'text-[#10b981]',
+        volume: 100,
+        isSpeaking: true
+      });
+      peers.set('demo_2', {
+        id: 'demo_2',
+        name: '涛古',
+        statusText: '● P2P 已直连 (31ms)',
+        statusColor: 'text-[#10b981]',
+        volume: 125,
+        isSpeaking: false
+      });
+
+      renderMembersGrid();
+      startLocalLevelMeter();
+
+      appendSystemChat('👀 当前处于【界面预览演示模式】，无需麦克风即可体验房内控制与聊天');
+      appendChatBubble({
+        senderName: '能量瓶盖',
+        text: '兄弟们上号了，房号发我一下，我调下麦克风增强！',
+        isMe: false,
+        timeStr: '刚刚'
+      });
+      appendChatBubble({
+        senderName: '涛古',
+        text: '车队码：#CJXD-8848，直接点消息就能复制~',
+        isMe: false,
+        timeStr: '刚刚'
+      });
+    }
+
+    async function joinRoom(targetRoomId) {
+      const errEl = document.getElementById('lobbyError');
+      if (errEl) errEl.classList.add('hidden');
+
+      ensureNickname();
+      const roomName = (targetRoomId || '公共语音大厅').trim();
+
+      try {
+        await initLocalAudioPipeline();
+      } catch (err) {
+        const msg = '无法获取麦克风权限：请确保在独立 HTTPS 网页（如 GitHub Pages）中打开并点击“允许”使用麦克风。若仅需查看界面，可点击右侧「👀 预览房间界面」。';
+        if (errEl) {
+          errEl.textContent = msg;
+          errEl.classList.remove('hidden');
+        }
+        showToast('麦克风授权失败，请检查浏览器权限', 'error');
+        return;
+      }
+
+      switchToRoomUI(roomName, false);
+      peers.clear();
+      renderMembersGrid();
+
+      appendSystemChat(`🎙️ 你已加入频道「${roomName}」，麦克风增强与降噪已就绪`);
+      if (isWebSocketBlocked) {
+        appendSystemChat('⚠️ 当前处于沙盒离线预览环境，部署到独立 HTTPS 网页后即可与队友实时连麦');
+      }
+
+      // 订阅房间主题并发送 hello 握手
+      if (mqttClient && isMqttConnected && !isWebSocketBlocked) {
+        const roomTopic = `${TOPIC_ROOM_PREFIX}/${encodeURIComponent(roomName)}`;
+        mqttClient.subscribe(roomTopic, { qos: 1 }, (err) => {
+          if (!err) {
+            publishRoomSignal({
+              type: 'hello',
+              from: myPeerId,
+              name: myNickname
+            });
+          }
+        });
+      }
+
+      // 更新大厅状态并开启房间内心跳
+      lobbyUsers.set(myPeerId, { name: myNickname, roomId: roomName, lastSeen: Date.now() });
+      publishLobbySignal({
+        type: 'lobby_ping',
+        from: myPeerId,
+        name: myNickname,
+        roomId: roomName
+      });
+
+      if (roomHeartbeatTimer) clearInterval(roomHeartbeatTimer);
+      roomHeartbeatTimer = setInterval(() => {
+        if (!isInRoom || isDemoMode) return;
+        publishLobbySignal({
+          type: 'lobby_ping',
+          from: myPeerId,
+          name: myNickname,
+          roomId: currentRoomId
+        });
+      }, 6000);
+    }
+
+    function leaveRoom() {
+      if (isInRoom && !isDemoMode && currentRoomId) {
+        publishRoomSignal({
+          type: 'bye',
+          from: myPeerId,
+          name: myNickname
+        });
+        if (mqttClient && isMqttConnected && !isWebSocketBlocked) {
+          try {
+            mqttClient.unsubscribe(`${TOPIC_ROOM_PREFIX}/${encodeURIComponent(currentRoomId)}`);
+          } catch (e) {}
+        }
+      }
+
+      if (roomHeartbeatTimer) {
+        clearInterval(roomHeartbeatTimer);
+        roomHeartbeatTimer = null;
+      }
+      if (localMeterRaf) {
+        cancelAnimationFrame(localMeterRaf);
+        localMeterRaf = null;
+      }
+
+      for (const peerId of Array.from(peers.keys())) {
+        removePeer(peerId);
+      }
+      peers.clear();
+
+      if (rawMicStream) {
+        rawMicStream.getTracks().forEach((t) => t.stop());
+        rawMicStream = null;
+      }
+      processedStream = null;
+
+      isInRoom = false;
+      isDemoMode = false;
+      currentRoomId = '';
+
+      lobbyUsers.set(myPeerId, { name: myNickname || '游客', roomId: '', lastSeen: Date.now() });
+      publishLobbySignal({
+        type: 'lobby_ping',
+        from: myPeerId,
+        name: myNickname || '游客',
+        roomId: ''
+      });
+      renderLobbyRooms();
+
+      const mainContainer = document.getElementById('mainContainer');
+      if (mainContainer) {
+        mainContainer.classList.remove('max-w-6xl');
+        mainContainer.classList.add('max-w-4xl');
+      }
+
+      document.getElementById('roomView')?.classList.add('hidden');
+      document.getElementById('roomView')?.classList.remove('flex');
+      document.getElementById('lobbyView')?.classList.remove('hidden');
+    }
+
+    function copyInviteLink() {
+      const url = new URL(window.location.href);
+      url.searchParams.set('room', currentRoomId || '公共语音大厅');
+      const turnApi = (document.getElementById('turnApiUrl')?.value || sharedTurnApiUrl || '').trim();
+      if (turnApi) {
+        url.searchParams.set('turnApi', turnApi);
+      }
+      const ok = copyTextToClipboard(url.toString());
+      if (ok) {
+        showToast('已复制频道邀请链接，发到微信/QQ群即可直接加入！', 'success');
+      } else {
+        showToast('复制失败，请手动复制浏览器地址栏链接', 'error');
+      }
+    }
+
+    function unlockAllAudioElements() {
+      let allPlayed = true;
+      for (const peer of peers.values()) {
+        if (peer.audioEl) {
+          peer.audioEl.play().catch(() => {
+            allPlayed = false;
+          });
+        }
+      }
+      if (allPlayed) {
+        document.getElementById('unlockAudioBtn')?.classList.add('hidden');
+        showToast('已恢复语音播放', 'success');
+      }
+    }
+
+    /**
+     * ============================================================
+     * 8. WebRTC P2P 网格连麦引擎（防碰撞协商 + ICE 队列 + 自动重连）
+     * ============================================================
+     */
+    async function ensurePeer(remotePeerId, remoteName) {
+      if (peers.has(remotePeerId)) {
+        const existing = peers.get(remotePeerId);
+        if (remoteName && existing.name !== remoteName) {
+          existing.name = remoteName;
+          renderMembersGrid();
+        }
+        return existing;
+      }
+
+      const iceServers = await resolveIceServers();
+      const pc = new RTCPeerConnection({ iceServers });
+
+      const peerState = {
+        id: remotePeerId,
+        name: remoteName || '队友',
+        pc,
+        iceQueue: [],
+        makingOffer: false,
+        ignoreOffer: false,
+        polite: myPeerId.localeCompare(remotePeerId) < 0,
+        retryCount: 0,
+        handshakeTimer: null,
+        audioEl: null,
+        gainNode: null,
+        volume: 100,
+        statusText: '正在建立连接...',
+        statusColor: 'text-amber-400',
+        isSpeaking: false,
+        meterRaf: null
+      };
+
+      peers.set(remotePeerId, peerState);
+      renderMembersGrid();
+
+      // 注入本地处理后的麦克风音轨
+      if (processedStream) {
+        processedStream.getAudioTracks().forEach((track) => {
+          pc.addTrack(track, processedStream);
+        });
+      }
+
+      // 收集并发送 ICE Candidate
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          publishRoomSignal({
+            type: 'ice',
+            from: myPeerId,
+            to: remotePeerId,
+            name: myNickname,
+            candidate: event.candidate
+          });
+        }
+      };
+
+      // 接收远端队友音频流
+      pc.ontrack = (event) => {
+        const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+
+        let audioEl = peerState.audioEl;
+        if (!audioEl) {
+          audioEl = document.createElement('audio');
+          audioEl.autoplay = true;
+          audioEl.playsInline = true;
+          audioEl.muted = isDeafened;
+          peerState.audioEl = audioEl;
+        }
+        audioEl.srcObject = remoteStream;
+        audioEl.play().catch(() => {
+          document.getElementById('unlockAudioBtn')?.classList.remove('hidden');
+        });
+
+        monitorRemoteAudioLevel(peerState, remoteStream);
+      };
+
+      // 监听连接状态变化与自动重连
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === 'connected') {
+          peerState.retryCount = 0;
+          if (peerState.handshakeTimer) {
+            clearTimeout(peerState.handshakeTimer);
+            peerState.handshakeTimer = null;
+          }
+          detectConnectionRoute(peerState);
+        } else if (state === 'connecting') {
+          updatePeerStatusUI(remotePeerId, 'ICE 打洞中...', 'text-amber-400');
+        } else if (state === 'disconnected' || state === 'failed') {
+          if (peerState.retryCount < 3) {
+            peerState.retryCount += 1;
+            updatePeerStatusUI(remotePeerId, `网络波动，自动重连(${peerState.retryCount}/3)...`, 'text-amber-400');
+            setTimeout(() => triggerIceRestart(remotePeerId), 1200);
+          } else {
+            updatePeerStatusUI(remotePeerId, 'NAT穿透受限(建议配TURN)', 'text-amber-400');
+          }
+        }
+      };
+
+      // 6 秒握手超时兜底检测
+      peerState.handshakeTimer = setTimeout(() => {
+        if (peers.has(remotePeerId) && pc.connectionState !== 'connected') {
+          updatePeerStatusUI(remotePeerId, 'NAT穿透受限(建议配TURN)', 'text-amber-400');
+        }
+      }, 7000);
+
+      return peerState;
+    }
+
+    async function initiateOffer(remotePeerId, iceRestart = false) {
+      const peer = peers.get(remotePeerId);
+      if (!peer || !peer.pc) return;
+      try {
+        peer.makingOffer = true;
+        const offer = await peer.pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
+        if (peer.pc.signalingState !== 'stable') return;
+        await peer.pc.setLocalDescription(offer);
+        publishRoomSignal({
+          type: 'offer',
+          from: myPeerId,
+          to: remotePeerId,
+          name: myNickname,
+          sdp: peer.pc.localDescription
+        });
+      } catch (err) {
+        // 忽略并发协商冲突
+      } finally {
+        peer.makingOffer = false;
+      }
+    }
+
+    async function flushIceQueue(peer) {
+      if (!peer || !peer.pc || !peer.pc.remoteDescription) return;
+      while (peer.iceQueue.length > 0) {
+        const cand = peer.iceQueue.shift();
+        try {
+          await peer.pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (e) {}
+      }
+    }
+
+    async function handleRoomSignal(msg) {
+      const remoteId = msg.from;
+      const remoteName = msg.name || '队友';
+
+      if (msg.type === 'chat') {
+        appendChatBubble({
+          senderName: remoteName,
+          text: msg.text || '',
+          isMe: false,
+          timeStr: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+        return;
+      }
+
+      if (msg.type === 'turn_sync' && msg.turnApiUrl) {
+        sharedTurnApiUrl = msg.turnApiUrl;
+        const mainApiEl = document.getElementById('turnApiUrl');
+        if (mainApiEl && !mainApiEl.value) {
+          mainApiEl.value = msg.turnApiUrl;
+        }
+        cachedTurnServers = await fetchMeteredTurnServers(msg.turnApiUrl);
+        appendSystemChat(`🌐 队友「${remoteName}」已共享 TURN 中继节点，正在自动重连...`);
+        await triggerIceRestart(remoteId);
+        return;
+      }
+
+      if (msg.type === 'bye') {
+        if (peers.has(remoteId)) {
+          appendSystemChat(`👋 ${remoteName} 离开了语音频道`);
+          removePeer(remoteId);
+        }
+        return;
+      }
+
+      if (msg.type === 'hello') {
+        const isNew = !peers.has(remoteId);
+        await ensurePeer(remoteId, remoteName);
+        if (isNew) {
+          appendSystemChat(`👋 ${remoteName} 加入了语音频道`);
+        }
+        // 回应存在并由 polite/impolite 规则发起 Offer
+        publishRoomSignal({
+          type: 'welcome',
+          from: myPeerId,
+          to: remoteId,
+          name: myNickname
+        });
+        await initiateOffer(remoteId, false);
+        return;
+      }
+
+      if (msg.type === 'welcome') {
+        const isNew = !peers.has(remoteId);
+        await ensurePeer(remoteId, remoteName);
+        if (isNew) {
+          appendSystemChat(`👋 ${remoteName} 已在语音频道中`);
+        }
+        return;
+      }
+
+      if (msg.type === 'offer' && msg.sdp) {
+        const peer = await ensurePeer(remoteId, remoteName);
+        const pc = peer.pc;
+        const offerCollision = peer.makingOffer || pc.signalingState !== 'stable';
+        peer.ignoreOffer = !peer.polite && offerCollision;
+        if (peer.ignoreOffer) return;
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          await flushIceQueue(peer);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          publishRoomSignal({
+            type: 'answer',
+            from: myPeerId,
+            to: remoteId,
+            name: myNickname,
+            sdp: pc.localDescription
+          });
+        } catch (err) {}
+        return;
+      }
+
+      if (msg.type === 'answer' && msg.sdp) {
+        const peer = peers.get(remoteId);
+        if (!peer || !peer.pc) return;
+        try {
+          await peer.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          await flushIceQueue(peer);
+        } catch (err) {}
+        return;
+      }
+
+      if (msg.type === 'ice' && msg.candidate) {
+        const peer = await ensurePeer(remoteId, remoteName);
+        if (peer.pc.remoteDescription && peer.pc.remoteDescription.type) {
+          try {
+            await peer.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+          } catch (e) {}
+        } else {
+          peer.iceQueue.push(msg.candidate);
+        }
+      }
+    }
+
+    async function triggerIceRestart(remotePeerId) {
+      const peer = peers.get(remotePeerId);
+      if (!peer) return;
+      updatePeerStatusUI(remotePeerId, '正在重新握手...', 'text-amber-400');
+
+      const savedName = peer.name;
+      const savedVol = peer.volume;
+      removePeer(remotePeerId);
+
+      const rebuilt = await ensurePeer(remotePeerId, savedName);
+      rebuilt.volume = savedVol;
+      renderMembersGrid();
+      await initiateOffer(remotePeerId, true);
+    }
+
+    function monitorRemoteAudioLevel(peer, stream) {
+      if (peer.meterRaf) cancelAnimationFrame(peer.meterRaf);
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!audioCtx) audioCtx = new AudioContextClass();
+        const src = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        src.connect(analyser);
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const loop = () => {
+          if (!peers.has(peer.id) || !isInRoom) return;
+          analyser.getByteFrequencyData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) sum += data[i];
+          const avg = sum / data.length;
+          const speaking = avg > 12 && !isDeafened;
+
+          if (peer.isSpeaking !== speaking) {
+            peer.isSpeaking = speaking;
+            const card = document.getElementById(`memberCard_${peer.id}`);
+            if (card) {
+              if (speaking) {
+                card.classList.add('border-[#10b981]', 'shadow-[0_0_20px_rgba(16,185,129,0.28)]');
+                card.classList.remove('border-[#262f3f]');
+              } else {
+                card.classList.remove('border-[#10b981]', 'shadow-[0_0_20px_rgba(16,185,129,0.28)]');
+                card.classList.add('border-[#262f3f]');
+              }
+            }
+          }
+          peer.meterRaf = requestAnimationFrame(loop);
+        };
+        peer.meterRaf = requestAnimationFrame(loop);
+      } catch (e) {}
+    }
+
+    async function detectConnectionRoute(peer) {
+      if (!peer || !peer.pc || !peer.pc.getStats) {
+        updatePeerStatusUI(peer.id, '● P2P 已直连', 'text-[#10b981]');
+        return;
+      }
+      try {
+        const stats = await peer.pc.getStats();
+        let activePair = null;
+        stats.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            activePair = report;
+          }
+        });
+        if (activePair) {
+          const localCand = stats.get(activePair.localCandidateId);
+          const remoteCand = stats.get(activePair.remoteCandidateId);
+          const isRelay = localCand?.candidateType === 'relay' || remoteCand?.candidateType === 'relay';
+          const rtt = activePair.currentRoundTripTime ? ` (${Math.round(activePair.currentRoundTripTime * 1000)}ms)` : '';
+          if (isRelay) {
+            updatePeerStatusUI(peer.id, `● TURN 中继已连通${rtt}`, 'text-cyan-400');
+          } else {
+            updatePeerStatusUI(peer.id, `● P2P 已直连${rtt}`, 'text-[#10b981]');
+          }
+        } else {
+          updatePeerStatusUI(peer.id, '● 语音已连通', 'text-[#10b981]');
+        }
+      } catch (e) {
+        updatePeerStatusUI(peer.id, '● 语音已连通', 'text-[#10b981]');
+      }
+    }
+
+    function removePeer(remotePeerId) {
+      const peer = peers.get(remotePeerId);
+      if (!peer) return;
+      if (peer.handshakeTimer) clearTimeout(peer.handshakeTimer);
+      if (peer.meterRaf) cancelAnimationFrame(peer.meterRaf);
+      if (peer.audioEl) {
+        try {
+          peer.audioEl.pause();
+          peer.audioEl.srcObject = null;
+        } catch (e) {}
+      }
+      if (peer.pc) {
+        try { peer.pc.close(); } catch (e) {}
+      }
+      peers.delete(remotePeerId);
+      if (isInRoom) renderMembersGrid();
+    }
+
+    function updatePeerStatusUI(remotePeerId, text, colorClass) {
+      const peer = peers.get(remotePeerId);
+      if (!peer) return;
+      peer.statusText = text;
+      peer.statusColor = colorClass;
+      const el = document.getElementById(`peerStatus_${remotePeerId}`);
+      if (el) {
+        el.textContent = text;
+        el.className = `text-xs truncate ${colorClass}`;
+      }
+    }
+
+    function setPeerVolume(remotePeerId, val) {
+      const vol = Number(val) || 100;
+      const peer = peers.get(remotePeerId);
+      if (peer) {
+        peer.volume = vol;
+        if (peer.audioEl) {
+          peer.audioEl.volume = Math.min(1, vol / 100);
+        }
+      }
+      const label = document.getElementById(`peerVolLabel_${remotePeerId}`);
+      if (label) label.textContent = `${vol}%`;
+    }
+
+    function renderMembersGrid() {
+      const grid = document.getElementById('membersGrid');
+      const countEl = document.getElementById('memberCount');
+      if (!grid) return;
+
+      const total = 1 + peers.size;
+      if (countEl) countEl.textContent = `${total} 人在麦`;
+
+      const myInitial = escapeHtml((myNickname || '我').charAt(0).toUpperCase());
+      const myStatusHtml = isMicMuted
+        ? '<span class="text-red-400">● 麦克风已静音</span>'
+        : '<span class="text-[#10b981]">● 麦克风正常</span>';
+
+      let html = `
+        <div id="memberCard_me" class="bg-[#0d1015] border border-[#262f3f] rounded-2xl p-4 flex flex-col justify-between gap-3 transition-all duration-150">
+          <div class="flex items-center gap-3">
+            <div class="w-11 h-11 rounded-full bg-gradient-to-br from-[#10b981] to-emerald-700 text-white font-bold text-base flex items-center justify-center shrink-0 shadow-md">
+              ${myInitial}
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold text-sm text-slate-100 truncate">${escapeHtml(myNickname)} (我)</div>
+              <div class="text-xs mt-0.5">${myStatusHtml}</div>
+            </div>
+          </div>
+          <div class="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-[#262f3f]/70">
+            <span>本地增强音频管线</span>
+            <span class="text-[#10b981] font-mono">48kHz 高清</span>
+          </div>
+        </div>
+      `;
+
+      for (const peer of peers.values()) {
+        const initial = escapeHtml((peer.name || '队').charAt(0).toUpperCase());
+        const speakBorder = peer.isSpeaking
+          ? 'border-[#10b981] shadow-[0_0_20px_rgba(16,185,129,0.28)]'
+          : 'border-[#262f3f]';
+
+        html += `
+          <div id="memberCard_${escapeHtml(peer.id)}" class="bg-[#0d1015] border ${speakBorder} rounded-2xl p-4 flex flex-col justify-between gap-3 transition-all duration-150">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-11 h-11 rounded-full bg-gradient-to-br from-[#3b82f6] to-indigo-700 text-white font-bold text-base flex items-center justify-center shrink-0 shadow-md">
+                  ${initial}
+                </div>
+                <div class="min-w-0">
+                  <div class="font-semibold text-sm text-slate-100 truncate">${escapeHtml(peer.name)}</div>
+                  <div id="peerStatus_${escapeHtml(peer.id)}" class="text-xs mt-0.5 truncate ${peer.statusColor}">${escapeHtml(peer.statusText)}</div>
+                </div>
+              </div>
+              <button type="button" onclick="triggerIceRestart('${escapeHtml(peer.id)}')" title="重新与该队友握手"
+                      class="shrink-0 bg-[#161b24] hover:bg-[#222936] border border-[#262f3f] text-slate-300 text-xs px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer">
+                🔄 重连
+              </button>
+            </div>
+
+            <div class="flex items-center gap-2.5 pt-2 border-t border-[#262f3f]/70">
+              <span class="text-xs text-slate-400 shrink-0">音量</span>
+              <input type="range" min="0" max="200" step="5" value="${peer.volume}"
+                     oninput="setPeerVolume('${escapeHtml(peer.id)}', this.value)"
+                     class="flex-1 h-1.5 bg-[#161b24] rounded-lg accent-[#3b82f6] cursor-pointer" />
+              <span id="peerVolLabel_${escapeHtml(peer.id)}" class="text-xs font-mono text-slate-300 w-10 text-right">${peer.volume}%</span>
+            </div>
+          </div>
+        `;
+      }
+
+      grid.innerHTML = html;
+    }
+
+    /**
+     * ============================================================
+     * 9. 房间内实时文字聊天框逻辑
+     * ============================================================
+     */
+    function appendSystemChat(text) {
+      const box = document.getElementById('chatMessages');
+      if (!box) return;
+      const div = document.createElement('div');
+      div.className = 'text-center text-[11px] text-slate-400 bg-[#161b24]/80 border border-[#262f3f]/60 rounded-lg px-2.5 py-1.5 self-center max-w-[92%]';
+      div.textContent = text;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function appendChatBubble({ senderName, text, isMe, timeStr }) {
+      const box = document.getElementById('chatMessages');
+      if (!box) return;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = `flex flex-col gap-1 max-w-[85%] ${isMe ? 'self-end items-end' : 'self-start items-start'}`;
+
+      const meta = document.createElement('div');
+      meta.className = 'text-[11px] text-slate-400 px-1';
+      meta.textContent = isMe ? `我 · ${timeStr}` : `${senderName} · ${timeStr}`;
+
+      const bubble = document.createElement('div');
+      bubble.title = '点击复制此消息';
+      bubble.className = isMe
+        ? 'bg-[#3b82f6] text-white text-xs sm:text-sm px-3.5 py-2 rounded-2xl rounded-tr-sm shadow-sm break-all cursor-pointer hover:bg-[#2563eb] transition-colors'
+        : 'bg-[#161b24] border border-[#262f3f] text-slate-100 text-xs sm:text-sm px-3.5 py-2 rounded-2xl rounded-tl-sm break-all cursor-pointer hover:border-[#3b82f6]/50 transition-colors';
+      bubble.textContent = text;
+      bubble.onclick = () => {
+        if (copyTextToClipboard(text)) {
+          showToast('已复制该条消息内容', 'success');
+        }
+      };
+
+      wrapper.appendChild(meta);
+      wrapper.appendChild(bubble);
+      box.appendChild(wrapper);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function sendChatMessage() {
+      const input = document.getElementById('chatInput');
+      const text = (input?.value || '').trim();
+      if (!text) return;
+
+      input.value = '';
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      appendChatBubble({
+        senderName: myNickname || '我',
+        text,
+        isMe: true,
+        timeStr
+      });
+
+      if (!isDemoMode && isInRoom) {
+        publishRoomSignal({
+          type: 'chat',
+          from: myPeerId,
+          name: myNickname,
+          text
+        });
+      }
+    }
+
+    function sendQuickPhrase(phrase) {
+      const input = document.getElementById('chatInput');
+      if (input) {
+        input.value = phrase;
+        sendChatMessage();
+      }
+    }
+
+    /**
+     * ============================================================
+     * 10. 页面初始化入口
+     * ============================================================
+     */
+    window.addEventListener('DOMContentLoaded', () => {
+      // 检测是否处于非 HTTPS 或受限 iframe 预览沙盒中
+      const isSecure = window.isSecureContext && location.protocol === 'https:';
+      const isInIframe = window.self !== window.top;
+      if (!isSecure || isInIframe) {
+        const warn = document.getElementById('httpsWarning');
+        if (warn) warn.classList.remove('hidden');
+      }
+
+      // 恢复本地缓存昵称与网络配置
+      const savedNick = safeGetStorage('voice_nickname', '');
+      const nickInput = document.getElementById('nicknameInput');
+      if (nickInput && savedNick) {
+        nickInput.value = savedNick;
+      }
+      loadNetworkSettings();
+
+      // 解析邀请链接参数（?room=...&turnApi=...）
+      const params = new URLSearchParams(window.location.search);
+      const inviteRoom = params.get('room');
+      const inviteTurnApi = params.get('turnApi');
+      if (inviteTurnApi) {
+        sharedTurnApiUrl = inviteTurnApi;
+        const apiEl = document.getElementById('turnApiUrl');
+        if (apiEl) apiEl.value = inviteTurnApi;
+      }
+      if (inviteRoom) {
+        const customInput = document.getElementById('customRoomInput');
+        if (customInput) customInput.value = inviteRoom;
+        showToast(`已识别邀请频道「${inviteRoom}」，点击加入即可连麦`, 'info');
+      }
+
+      // 渲染大厅预设频道并启动信令连接
+      renderLobbyRooms();
+      initGlobalMqtt();
+
+      // 定时清理离线大厅用户并发送大厅心跳
+      lobbyCleanupTimer = setInterval(() => {
+        if (isWebSocketBlocked) {
+          const now = Date.now();
+          if (lobbyUsers.has('preview_u1')) lobbyUsers.get('preview_u1').lastSeen = now;
+          if (lobbyUsers.has('preview_u2')) lobbyUsers.get('preview_u2').lastSeen = now;
+          renderLobbyRooms();
+          return;
+        }
+        if (!isInRoom) {
+          publishLobbySignal({
+            type: 'lobby_ping',
+            from: myPeerId,
+            name: myNickname || '游客',
+            roomId: ''
+          });
+          lobbyUsers.set(myPeerId, { name: myNickname || '游客', roomId: '', lastSeen: Date.now() });
+          renderLobbyRooms();
+        }
+      }, 6000);
+
+      // 页面关闭时礼貌通知房间与大厅退出
+      window.addEventListener('beforeunload', () => {
+        if (isInRoom && !isDemoMode && currentRoomId) {
+          publishRoomSignal({
+            type: 'bye',
+            from: myPeerId,
+            name: myNickname
+          });
+        }
+        publishLobbySignal({
+          type: 'lobby_leave',
+          from: myPeerId
+        });
+      });
+    });
+  </script>
+</body>
+</html>
