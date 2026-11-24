@@ -12,7 +12,7 @@ This branch improves client-side recovery behavior while preserving the existing
 
 ## Important: client changes alone cannot guarantee cross-carrier voice
 
-The current repository contains only `index.html`. It has no TURN relay server or server-side credential endpoint. The current default configuration contains public STUN servers, but no production TURN relay. STUN helps peers discover public network mappings; it does not relay media. Users behind symmetric NAT, carrier-grade NAT, or restrictive firewalls may still connect to the room but fail to exchange audio.
+The application source currently consists of a single `index.html`. There is no TURN relay server or server-side credential endpoint in the project. The current default configuration contains public STUN servers, but no production TURN relay. STUN helps peers discover public network mappings; it does not relay media. Users behind symmetric NAT, carrier-grade NAT, or restrictive firewalls may still connect to the room but fail to exchange audio.
 
 For reliable service across mobile carriers and regions, deploy a production TURN service and make it available to every user:
 
