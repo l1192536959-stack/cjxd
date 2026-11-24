@@ -632,10 +632,10 @@
 
             <div class="flex flex-col gap-1">
               <label for="turnApiUrl" class="text-xs text-slate-400">
-                方式 A：免费 Metered TURN API 链接（推荐，支持手机 4G/5G 热点与校园网穿透，自动保存）
+                方式 A：Cloudflare TURN 短期凭证接口（自动获取，支持跨运营商中继）
               </label>
               <input id="turnApiUrl" type="text" onchange="saveNetworkSettings()"
-                     placeholder="例如：https://你的项目.metered.live/api/v1/turn/credentials?apiKey=你的KEY"
+                     placeholder="默认：/api/turn-credentials（由 Cloudflare Worker 安全生成）"
                      class="w-full bg-[#080312]/85 border border-white/10 focus:border-[#a855f7] rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none" />
             </div>
 
@@ -983,9 +983,8 @@
       myAvatarData = safeGetStorage('vc_avatar_v1') || '';
       updateProfileAvatarPreview();
       const savedTurnApi = safeGetStorage('vc_turn_api');
-      if (savedTurnApi) {
-        document.getElementById('turnApiUrl').value = savedTurnApi;
-      }
+      // 默认使用同源 Cloudflare Worker 凭证接口；保留用户已保存的自定义 TURN API 设置
+      document.getElementById('turnApiUrl').value = savedTurnApi || '/api/turn-credentials';
       const savedTurnUrl = safeGetStorage('vc_turn_url');
       if (savedTurnUrl) {
         document.getElementById('turnUrl').value = savedTurnUrl;
@@ -1220,7 +1219,7 @@
     }
 
     /**
-     * 若填写了 Metered TURN API 链接，则在加入房间前自动拉取最新的 TURN 临时凭证
+     * 在加入房间前从同源 Cloudflare Worker 获取短期 TURN 凭证（不在浏览器保存长期密钥）
      */
     async function fetchDynamicTurnServers() {
       const apiUrl = document.getElementById('turnApiUrl').value.trim();
