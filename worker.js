@@ -1,10 +1,9 @@
 /**
  * cjxd Cloudflare Worker
- * Serves the existing static app through Workers Assets and issues short-lived
- * Cloudflare Realtime TURN credentials. Long-lived secrets stay in Worker Secrets.
+ * Serves the existing static app and proxies short-lived/scope-limited
+ * Metered Open Relay ICE credentials. Provider keys stay in Worker Secrets.
  */
-const TURN_TTL_SECONDS = 12 * 60 * 60; // 12 hours; Cloudflare maximum is 48 hours
-const TURN_API_BASE = "https://rtc.live.cloudflare.com/v1/turn/keys";
+const METERED_API_TIMEOUT_MS = 10000;
 
 function json(body, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
@@ -23,11 +22,8 @@ function json(body, status = 200, extraHeaders = {}) {
 function isSameOriginRequest(request, url) {
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) return false;
-
-  // Reject cross-site browser fetches. Same-origin requests are allowed.
   const fetchSite = request.headers.get("Sec-Fetch-Site");
   if (fetchSite === "cross-site") return false;
-
   const referer = request.headers.get("Referer");
   if (!origin && referer) {
     try {
@@ -40,16 +36,19 @@ function isSameOriginRequest(request, url) {
 }
 
 function filterIceServers(payload) {
-  const input = Array.isArray(payload?.iceServers) ? payload.iceServers : [];
+  const input = Array.isArray(payload)
+    ? payload
+    : (Array.isArray(payload?.iceServers) ? payload.iceServers : []);
   const output = [];
 
   for (const server of input) {
     if (!server || !server.urls) continue;
     const urls = (Array.isArray(server.urls) ? server.urls : [server.urls])
       .filter((value) => typeof value === "string")
-      .filter((value) => !/:53(?:\?|$)/.test(value));
-
+      .filter((value) => /^(stun|stuns|turn|turns):/i.test(value))
+      .filter((value) => !/:53(?:\\?|$)/.test(value));
     if (!urls.length) continue;
+
     const item = { urls };
     if (typeof server.username === "string") item.username = server.username;
     if (typeof server.credential === "string") item.credential = server.credential;
@@ -57,64 +56,62 @@ function filterIceServers(payload) {
     output.push(item);
   }
 
-  // Require an actual TURN URL and short-lived credentials, not just STUN.
-  const hasTurn = output.some((server) => {
-    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-    return urls.some((value) => /^(turn|turns):/i.test(value));
-  });
   const credentialedTurn = output.some((server) => {
     const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
     return urls.some((value) => /^(turn|turns):/i.test(value))
       && Boolean(server.username)
       && Boolean(server.credential);
   });
-
-  if (!hasTurn || !credentialedTurn) {
-    throw new Error("Cloudflare did not return valid TURN credentials");
+  if (!credentialedTurn) {
+    throw new Error("Metered did not return credentialed TURN servers");
   }
   return output;
 }
 
 async function issueTurnCredentials(env) {
-  const keyId = env.REALTIME_TURN_TOKEN_ID;
-  const keySecret = env.REALTIME_TURN_TOKEN_SECRET;
-  if (!keyId || !keySecret) {
-    return json({ error: "TURN_NOT_CONFIGURED", message: "语音中继服务尚未完成配置" }, 503);
+  const appDomain = String(env.METERED_APP_DOMAIN || "").trim().toLowerCase();
+  const apiKey = env.METERED_TURN_API_KEY;
+  // Accept only the exact Metered app hostname; never allow arbitrary upstream URLs.
+  if (!/^[a-z0-9-]+\\.metered\\.live$/.test(appDomain) || !apiKey) {
+    return json({
+      error: "TURN_NOT_CONFIGURED",
+      message: "免费 TURN 服务尚未完成配置",
+    }, 503);
   }
 
+  const endpoint = new URL(`https://${appDomain}/api/v1/turn/credentials`);
+  endpoint.searchParams.set("apiKey", apiKey);
+
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), METERED_API_TIMEOUT_MS);
   try {
-    const upstream = await fetch(
-      `${TURN_API_BASE}/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${keySecret}`,
-          "content-type": "application/json",
-          accept: "application/json",
-        },
-        body: JSON.stringify({ ttl: TURN_TTL_SECONDS }),
-        signal: controller.signal,
-      },
-    );
+    const upstream = await fetch(endpoint.toString(), {
+      method: "GET",
+      headers: { accept: "application/json" },
+      cache: "no-store",
+      signal: controller.signal,
+    });
 
     if (!upstream.ok) {
-      // Do not expose provider response bodies or secret-related details.
-      console.error("Cloudflare TURN credential request failed:", upstream.status);
-      return json({ error: "TURN_PROVIDER_ERROR", message: "暂时无法获取语音中继凭证，请稍后重试" }, 502);
+      console.error("Metered TURN credential request failed:", upstream.status);
+      return json({
+        error: "TURN_PROVIDER_ERROR",
+        message: "暂时无法获取免费语音中继凭证，请稍后重试",
+      }, 502);
     }
 
     const payload = await upstream.json();
     const iceServers = filterIceServers(payload);
     return json({
       iceServers,
-      expiresInSeconds: TURN_TTL_SECONDS,
-      provider: "cloudflare-realtime-turn",
+      provider: "metered-open-relay",
     });
   } catch (error) {
-    console.error("TURN credential generation failed:", error?.name || "Error");
-    return json({ error: "TURN_UNAVAILABLE", message: "语音中继服务暂时不可用" }, 502);
+    console.error("Metered TURN credential request failed:", error?.name || "Error");
+    return json({
+      error: "TURN_UNAVAILABLE",
+      message: "免费语音中继服务暂时不可用",
+    }, 502);
   } finally {
     clearTimeout(timeout);
   }
@@ -134,7 +131,6 @@ export default {
       return issueTurnCredentials(env);
     }
 
-    // Workers Static Assets binding serves the existing index.html and other assets.
     if (env.ASSETS) return env.ASSETS.fetch(request);
     return new Response("Not Found", { status: 404 });
   },
