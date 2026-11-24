@@ -1,6 +1,6 @@
 /**
  * cjxd Cloudflare Worker
- * Serves the existing static app and proxies short-lived/scope-limited
+ * Serves the existing static app and proxies scoped
  * Metered Open Relay ICE credentials. Provider keys stay in Worker Secrets.
  */
 const METERED_API_TIMEOUT_MS = 10000;
