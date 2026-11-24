@@ -1380,8 +1380,11 @@
           // 信令恢复后，旧的 ICE 状态可能仍显示 connected 但媒体路径已失效；
           // 对已有 peer 做一次错峰 ICE restart，避免同时向所有队友发起请求。
           peers.forEach((peer, id) => {
-            if (peer.pc && peer.pc.connectionState !== 'closed') {
-              setTimeout(() => triggerIceRestart(id, false), 500 + Math.floor(Math.random() * 900));
+            if (!peer.pc || peer.pc.connectionState === 'closed') return;
+            const ice = peer.pc.iceConnectionState;
+            const remoteTrack = peer.remoteStream && peer.remoteStream.getAudioTracks()[0];
+            if (ice === 'failed' || ice === 'disconnected' || (remoteTrack && remoteTrack.readyState === 'ended')) {
+              setTimeout(() => scheduleAutoIceRestart(id, ice === 'failed'), 500 + Math.floor(Math.random() * 900));
             }
           });
         }
