@@ -10,38 +10,67 @@ This branch improves client-side recovery behavior while preserving the existing
 - Browser online/offline and tab visibility changes trigger a recovery pass; a suspended Web Audio context is resumed when possible.
 - Remote audio track mute/unmute/end events are reflected in the member status, and remote audio nodes are cleaned up when a peer is removed.
 
-## Important: client changes alone cannot guarantee cross-carrier voice
+## Production TURN service: Cloudflare Realtime TURN
 
-The application source currently consists of a single `index.html`. There is no TURN relay server or server-side credential endpoint in the project. The current default configuration contains public STUN servers, but no production TURN relay. STUN helps peers discover public network mappings; it does not relay media. Users behind symmetric NAT, carrier-grade NAT, or restrictive firewalls may still connect to the room but fail to exchange audio.
+The project now includes a Cloudflare Worker endpoint at `GET /api/turn-credentials`. The existing page defaults to this same-origin endpoint; no visitor needs to enter a TURN URL or API key. The endpoint requests fresh credentials from Cloudflare and returns only short-lived ICE credentials.
 
-For reliable service across mobile carriers and regions, deploy a production TURN service and make it available to every user:
+### 1. Create the Cloudflare TURN key
 
-1. Provision a managed TURN provider or a Coturn server with adequate bandwidth and regional capacity.
-2. Enable TURN over UDP and TCP, plus TURN/TLS over TCP (commonly 5349 or 443 where supported). Open the configured relay UDP port range in the firewall/security group.
-3. Put the provider API key or Coturn shared secret in a server-side secret store (for Cloudflare Workers, use Worker Secrets). Do not put a long-lived provider API key in `index.html`, a query string, or browser localStorage.
-4. Expose a same-origin HTTPS endpoint that returns short-lived ICE credentials in this format:
+1. Open the Cloudflare Dashboard and select the account that owns the `cjxd` Worker.
+2. Open **Realtime → TURN Server** and create a TURN server/key.
+3. Save the returned **TURN Token ID** and **TURN API Token/secret** securely. The secret is shown only during creation; do not paste it into GitHub, this chat, or the browser UI.
+4. Cloudflare's managed TURN service supports UDP, TCP, and TLS. Its global anycast service does not use Cloudflare's China Network, so test carefully from mainland China and every target carrier.
+5. TURN traffic is billed by outbound data (currently documented at USD $0.05/real-time GB unless used with Realtime SFU). Monitor usage and set account billing alerts.
 
-```json
-[
-  {
-    "urls": [
-      "turn:turn.example.com:3478?transport=udp",
-      "turn:turn.example.com:3478?transport=tcp",
-      "turns:turn.example.com:5349?transport=tcp"
-    ],
-    "username": "short-lived-username",
-    "credential": "short-lived-password"
-  }
-]
+### 2. Add the two Worker Secrets
+
+From the repository root, deploy the Worker using Wrangler after logging into the correct Cloudflare account:
+
+```bash
+npx wrangler secret put REALTIME_TURN_TOKEN_ID
+npx wrangler secret put REALTIME_TURN_TOKEN_SECRET
 ```
 
-5. Configure the TURN API URL in the advanced network settings for each client during the pilot. For production, set a site-wide default endpoint in the application so users do not need to configure it manually. The endpoint must allow CORS from the site origin and return fresh credentials with `Cache-Control: no-store`.
-6. Test with two devices on different carriers (for example, one Wi-Fi and one 4G/5G). In Chrome/Edge, open `chrome://webrtc-internals` before joining. Confirm the selected candidate pair is `relay` when direct P2P is blocked, and confirm inbound audio `bytesReceived` increases.
+Enter the corresponding values when prompted. These are Worker Secrets, not ordinary `vars`. Never commit a `.dev.vars` file or secret values.
+
+The Worker uses a 12-hour credential TTL, filters the browser-incompatible port 53 URLs, validates that Cloudflare returned a credentialed TURN server, and responds with `Cache-Control: no-store`. The provider key is never returned to the browser.
+
+### 3. Deploy
+
+The new `wrangler.jsonc` configures the existing root `index.html` as Workers Static Assets and sends `/api/*` through `worker.js`. After adding both secrets:
+
+```bash
+npx wrangler deploy
+```
+
+If the current production Worker is managed from a different Cloudflare project or has a different Worker name, do not overwrite it blindly. First confirm the active deployment's name/build settings and reconcile them with this `wrangler.jsonc`.
+
+### 4. Protect the public credential endpoint
+
+The endpoint rejects cross-site browser requests and does not cache credentials. Because this is a public voice application, also create a Cloudflare **WAF → Rate limiting rule** for the exact path `/api/turn-credentials`, keyed by client IP. A conservative starting policy is 30 requests per minute per IP with a short block period; tune it against real room-join traffic. Origin checks alone are not a substitute for rate limiting.
+
+### 5. Verify the endpoint and relay
+
+After deploy, open:
+
+```
+https://YOUR-WORKER-DOMAIN/api/turn-credentials
+```
+
+A successful response contains an `iceServers` array with `turn.cloudflare.com` URLs plus a username and credential. Treat that response as temporary secret material; do not post it publicly.
+
+Then open the app in two devices on different networks, join the same room, and speak in both directions. In Chrome/Edge, open `chrome://webrtc-internals` before joining. Confirm:
+- ICE gathers relay candidates (`typ relay`).
+- When direct P2P is unavailable, the selected candidate pair uses a relay candidate.
+- The remote audio inbound `bytesReceived` counter increases.
+- Both users can hear each other after changing Wi-Fi/cellular networks.
+
+Cloudflare TURN is a relay fallback, not a guarantee that every carrier path will work. In particular, verify the experience from mainland China and restrictive enterprise/campus networks before treating the rollout as complete.
 
 ## Security note
 
-The existing advanced setting accepts a TURN API URL in the browser. If that URL embeds a long-lived API key, every visitor can inspect and copy it. Use a server-side Worker endpoint with secrets and short-lived TURN credentials instead. Do not commit provider keys or TURN passwords to this repository.
-
+Do not put the long-lived TURN API token in `index.html`, query parameters, localStorage, GitHub, or a public issue. Only the short-lived username/credential pair is sent to each browser, and those credentials expire after 12 hours.
+ 
 ## Rollout and acceptance checklist
 
 - [ ] Deploy this branch to a staging Worker first.
