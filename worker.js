@@ -46,7 +46,7 @@ function filterIceServers(payload) {
     const urls = (Array.isArray(server.urls) ? server.urls : [server.urls])
       .filter((value) => typeof value === "string")
       .filter((value) => /^(stun|stuns|turn|turns):/i.test(value))
-      .filter((value) => !/:53(?:\\?|$)/.test(value));
+      .filter((value) => !/:53(?:\?|$)/.test(value));
     if (!urls.length) continue;
 
     const item = { urls };
@@ -72,7 +72,7 @@ async function issueTurnCredentials(env) {
   const appDomain = String(env.METERED_APP_DOMAIN || "").trim().toLowerCase();
   const apiKey = env.METERED_TURN_API_KEY;
   // Accept only the exact Metered app hostname; never allow arbitrary upstream URLs.
-  if (!/^[a-z0-9-]+\\.metered\\.live$/.test(appDomain) || !apiKey) {
+  if (!/^[a-z0-9-]+\.metered\.live$/.test(appDomain) || !apiKey) {
     return json({
       error: "TURN_NOT_CONFIGURED",
       message: "免费 TURN 服务尚未完成配置",
