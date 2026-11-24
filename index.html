@@ -1228,16 +1228,27 @@
         resolvedDynamicTurnServers = [];
         return;
       }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
       try {
-        const res = await fetch(apiUrl);
+        const res = await fetch(apiUrl, { signal: controller.signal, cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (Array.isArray(data)) {
-          resolvedDynamicTurnServers = data;
-        }
+        const list = Array.isArray(data) ? data : (Array.isArray(data.iceServers) ? data.iceServers : []);
+        const valid = list.filter((server) => {
+          if (!server || !server.urls) return false;
+          const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+          return urls.some((url) => typeof url === 'string' && /^(stun|stuns|turn|turns):/i.test(url));
+        });
+        if (!valid.length) throw new Error('TURN API 未返回有效 iceServers');
+        resolvedDynamicTurnServers = valid;
+        console.info(`TURN 凭证已加载：${valid.length} 组 ICE server`);
       } catch (err) {
-        console.warn('拉取动态 TURN 凭证失败，将回退使用默认 STUN 节点:', err);
-        showToast('TURN API 拉取失败，已自动使用国内 STUN 直连', 'info');
+        resolvedDynamicTurnServers = [];
+        console.warn('拉取动态 TURN 凭证失败，将暂时使用默认 STUN 节点:', err);
+        showToast('TURN 中继暂不可用，当前仅尝试直连；部分运营商网络可能无法通话', 'warning');
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
@@ -2051,7 +2062,10 @@
     function createPeerConnection(remoteId, remoteName) {
       const pc = new RTCPeerConnection({
         iceServers: getIceServers(),
-        iceCandidatePoolSize: 4
+        iceCandidatePoolSize: 4,
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
       });
 
       // 取出在该队友对象创建前就已经提前到达的 ICE 候选地址
@@ -2087,6 +2101,7 @@
             clearTimeout(peer.iceRetryTimer);
             peer.iceRetryTimer = null;
           }
+          peer.iceRetryCount = 0;
           updateConnectionRouteBadge(remoteId);
         } else if (connState === 'connecting' || iceState === 'checking') {
           stateEl.textContent = `ICE 打洞中(已收${peer.receivedCandidatesCount}个地址)...`;
@@ -2119,6 +2134,10 @@
           }
 
           // 使用 Web Audio API GainNode 支持 0% - 200% 独立音量调节
+          const peerObj = peers.get(remoteId);
+          if (peerObj && peerObj.remoteSourceNode) {
+            try { peerObj.remoteSourceNode.disconnect(); } catch (e) {}
+          }
           const source = audioContext.createMediaStreamSource(remoteStream);
           const gainNode = audioContext.createGain();
           const slider = document.querySelector(`#card_${remoteId} input[type="range"]`);
@@ -2133,11 +2152,33 @@
           audioEl.muted = true;
           audioEl.play().catch(() => {});
 
-          const peerObj = peers.get(remoteId);
-          if (peerObj) {
-            peerObj.gainNode = gainNode;
-            peerObj.audioEl = audioEl;
+          const activePeer = peers.get(remoteId);
+          if (activePeer) {
+            activePeer.gainNode = gainNode;
+            activePeer.audioEl = audioEl;
+            activePeer.remoteSourceNode = source;
+            activePeer.remoteStream = remoteStream;
           }
+          remoteStream.getAudioTracks().forEach((track) => {
+            track.onmute = () => {
+              const badge = document.getElementById(`state_${remoteId}`);
+              if (badge) {
+                badge.textContent = '音频流暂时中断，正在检测...';
+                badge.className = 'text-xs text-amber-400 mt-0.5';
+              }
+            };
+            track.onunmute = () => updateConnectionRouteBadge(remoteId);
+            track.onended = () => {
+              const badge = document.getElementById(`state_${remoteId}`);
+              if (badge) {
+                badge.textContent = '音轨已结束，尝试恢复连接...';
+                badge.className = 'text-xs text-amber-400 mt-0.5';
+              }
+              setTimeout(() => {
+                if (peers.has(remoteId)) triggerIceRestart(remoteId, false);
+              }, 1200);
+            };
+          });
           setupRemoteVoiceDetector(remoteId, remoteStream);
         } catch (err) {
           console.error('远端音频渲染异常:', err);
@@ -2150,6 +2191,8 @@
         lastSeen: Date.now(),
         gainNode: null,
         audioEl: null,
+        remoteSourceNode: null,
+        remoteStream: null,
         analyserTimer: null,
         iceRetryCount: 0,
         iceRetryTimer: null,
@@ -2230,15 +2273,14 @@
       const stateEl = document.getElementById(`state_${remoteId}`);
       if (!peer || !stateEl) return;
 
-      if (peer.iceRetryCount >= 3) {
-        stateEl.textContent = '对称NAT受限(需配TURN/点🔄重连)';
+      // 指数退避重试，避免短暂网络抖动后永久放弃恢复。
+      if (peer.iceRetryCount >= 8) {
+        stateEl.textContent = '网络仍不稳定，稍后继续尝试；可检查 TURN 中继';
         stateEl.className = 'text-xs text-amber-400 mt-0.5';
-        return;
+        peer.iceRetryCount = 0;
       }
-
       if (peer.iceRetryTimer) return;
-
-      const delay = immediate ? 300 : 2000;
+      const delay = immediate ? 500 : Math.min(30000, 1000 * Math.pow(2, Math.min(peer.iceRetryCount, 5)));
       peer.iceRetryTimer = setTimeout(() => {
         peer.iceRetryTimer = null;
         const latestPeer = peers.get(remoteId);
@@ -2250,7 +2292,7 @@
         latestPeer.iceRetryCount += 1;
         const badge = document.getElementById(`state_${remoteId}`);
         if (badge) {
-          badge.textContent = `自动重连中 (${latestPeer.iceRetryCount}/3)...`;
+          badge.textContent = `自动恢复连接（第 ${latestPeer.iceRetryCount} 次）...`;
           badge.className = 'text-xs text-amber-400 mt-0.5';
         }
         triggerIceRestart(remoteId, false);
@@ -2616,6 +2658,12 @@
         if (peer.analyserTimer) clearInterval(peer.analyserTimer);
         if (peer.iceRetryTimer) clearTimeout(peer.iceRetryTimer);
         if (peer.pc) peer.pc.close();
+        if (peer.remoteSourceNode) {
+          try { peer.remoteSourceNode.disconnect(); } catch (e) {}
+        }
+        if (peer.audioEl) {
+          try { peer.audioEl.pause(); peer.audioEl.srcObject = null; } catch (e) {}
+        }
         peers.delete(remoteId);
       }
       const card = document.getElementById(`card_${remoteId}`);
@@ -2800,6 +2848,43 @@
       roomView.classList.remove('flex');
       document.getElementById('lobbyView').classList.remove('hidden');
     }
+
+
+    /**
+     * 网络切换/浏览器从后台恢复时，主动恢复 WebRTC 与音频上下文。
+     */
+    async function recoverRoomConnections(reason) {
+      if (!isInRoom || isDemoMode) return;
+      if (audioContext && audioContext.state === 'suspended') {
+        try { await audioContext.resume(); } catch (e) {}
+      }
+      if (!isMqttConnected && mqttClient) {
+        try { mqttClient.reconnect(); } catch (e) {}
+      } else if (isMqttConnected && currentRoom) {
+        publishRoomBroadcast({ type: 'hello', from: myPeerId, name: myNickname, avatar: myAvatarData });
+      }
+      peers.forEach((peer, id) => {
+        if (!peer.pc || peer.pc.connectionState === 'closed') return;
+        const ice = peer.pc.iceConnectionState;
+        if (ice === 'failed' || ice === 'disconnected' || ice === 'checking') {
+          scheduleAutoIceRestart(id, ice === 'failed');
+        }
+      });
+      console.info('语音恢复检查:', reason);
+    }
+
+    window.addEventListener('online', () => {
+      if (isInRoom) showToast('网络已恢复，正在检查语音连接...', 'info');
+      setTimeout(() => recoverRoomConnections('online'), 1200);
+    });
+    window.addEventListener('offline', () => {
+      if (isInRoom) showToast('网络暂时断开，恢复后将自动尝试重连', 'warning');
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && isInRoom) {
+        setTimeout(() => recoverRoomConnections('visibility'), 800);
+      }
+    });
 
     window.addEventListener('beforeunload', () => {
       if (isInRoom) {
